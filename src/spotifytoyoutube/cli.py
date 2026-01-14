@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import click
@@ -26,7 +27,7 @@ from spotifytoyoutube.youtube_search import YouTubeSearcher
 
 console = Console()
 
-BANNER = """
+BANNER = r"""
 [bold cyan]
                     ╭──────────────────────────────────────────╮
                     │  [bold green]♫[/bold green] [bold white]Spotify[/bold white] [bold red]→[/bold red] [bold yellow]YouTube[/bold yellow] [bold green]♫[/bold green]                   │
@@ -270,7 +271,9 @@ def match(
     completed_count = 0
 
     if fast:
-        # Parallel mode
+        # Parallel mode with detailed progress
+        print_lock = threading.Lock()
+
         with Progress(
             SpinnerColumn(style="yellow"),
             TextColumn("[bold]{task.description}[/bold]"),
@@ -282,27 +285,69 @@ def match(
         ) as progress:
             task = progress.add_task(f"[magenta]⚡ Parallel search ({workers} workers)...", total=len(tracks))
 
+            def on_progress(event: str, data: dict) -> None:
+                """Handle progress events from parallel searches."""
+                if not verbose:
+                    return
+                track = data.get("track")
+                track_name = f"[cyan]{track.artist}[/cyan] - {track.name[:25]}" if track else "Unknown"
+
+                with print_lock:
+                    if event == "cache_hit":
+                        console.print(f"      [dim]💾 Cache hit:[/dim] {track_name}")
+                    elif event == "searching":
+                        console.print(f"      [dim]🔍 Searching:[/dim] {track_name}")
+                    elif event == "found_candidates":
+                        count = data.get("count", 0)
+                        console.print(f"      [dim]   └─ Found {count} candidates[/dim]")
+                    elif event == "comparing":
+                        num = data.get("candidate_num", "?")
+                        title = data.get("candidate_title", "")[:35]
+                        console.print(f"      [dim]   └─ Comparing #{num}: {title}[/dim]")
+                    elif event == "candidate_accepted":
+                        bitrate = data.get("bitrate", 0)
+                        similarity = data.get("similarity", 0)
+                        console.print(f"      [dim]      ✓ Accepted ({bitrate:.0f}kbps, {similarity:.0%} match)[/dim]")
+                    elif event == "skipped":
+                        reason = data.get("reason", "unknown")
+                        if reason == "low_similarity":
+                            sim = data.get("similarity", 0)
+                            console.print(f"      [dim]      ✗ Skipped (similarity {sim:.0%} too low)[/dim]")
+                        elif reason == "duration_mismatch":
+                            diff = data.get("diff", 0)
+                            console.print(f"      [dim]      ✗ Skipped (duration off by {diff}s)[/dim]")
+                    elif event == "best_match":
+                        title = data.get("title", "")[:35]
+                        bitrate = data.get("bitrate", 0)
+                        console.print(f"      [green]   ★ Best: {title} ({bitrate:.0f}kbps)[/green]")
+
             def on_complete(track: Track, result: MatchResult | None) -> None:
                 nonlocal completed_count
-                completed_count += 1
-                progress.update(task, completed=completed_count)
-                if result:
-                    matches.append(result)
-                    if verbose:
-                        console.print(
-                            f"    [green]✓[/green] [dim]#{completed_count}[/dim] "
-                            f"[cyan]{track.artist}[/cyan] - {track.name} "
-                            f"[dim]→[/dim] [yellow]{result.audio_bitrate:.0f}kbps[/yellow]"
-                        )
-                else:
-                    failed.append(track)
-                    if verbose:
-                        console.print(
-                            f"    [red]✗[/red] [dim]#{completed_count}[/dim] "
-                            f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
-                        )
+                with print_lock:
+                    completed_count += 1
+                    progress.update(task, completed=completed_count)
+                    if result:
+                        matches.append(result)
+                        if verbose:
+                            console.print(
+                                f"    [green]✓[/green] [dim]#{completed_count}[/dim] "
+                                f"[cyan]{track.artist}[/cyan] - {track.name} "
+                                f"[dim]→[/dim] [yellow]{result.audio_bitrate:.0f}kbps[/yellow]"
+                            )
+                    else:
+                        failed.append(track)
+                        if verbose:
+                            console.print(
+                                f"    [red]✗[/red] [dim]#{completed_count}[/dim] "
+                                f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
+                            )
 
-            matcher.find_matches_parallel(tracks, max_workers=workers, on_complete=on_complete)
+            matcher.find_matches_parallel(
+                tracks,
+                max_workers=workers,
+                on_complete=on_complete,
+                on_progress=on_progress if verbose else None,
+            )
     else:
         # Sequential mode
         with Progress(

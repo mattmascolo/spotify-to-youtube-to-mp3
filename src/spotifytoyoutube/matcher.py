@@ -118,6 +118,7 @@ class TrackMatcher:
         self,
         track: Track,
         max_candidates: int = 10,
+        on_progress: Callable[[str, dict], None] | None = None,
     ) -> MatchResult | None:
         """
         Find the best YouTube match for a Spotify track.
@@ -127,14 +128,20 @@ class TrackMatcher:
         Args:
             track: Spotify track to match
             max_candidates: Maximum search results to evaluate
+            on_progress: Callback for progress updates (event_type, data)
 
         Returns:
             Best MatchResult, or None if no suitable match found
         """
+        def emit(event: str, **data: object) -> None:
+            if on_progress:
+                on_progress(event, {"track": track, **data})
+
         # Check cache first
         if self.cache:
             cached = self.cache.get(track.id)
             if cached:
+                emit("cache_hit")
                 yt_result = YouTubeResult(
                     video_id=cached["video_id"],
                     title=cached["title"],
@@ -155,17 +162,22 @@ class TrackMatcher:
             self.rate_limiter.wait()
 
         # Search YouTube
+        emit("searching")
         search_results = self.searcher.search(
             track.search_query,
             max_results=max_candidates,
         )
 
         if not search_results:
+            emit("no_results")
             return None
 
+        emit("found_candidates", count=len(search_results))
         candidates: list[MatchResult] = []
 
-        for result in search_results:
+        for i, result in enumerate(search_results):
+            emit("comparing", candidate_num=i + 1, candidate_title=result.title[:50])
+
             # Get detailed video info for accurate bitrate (unless skipped for speed)
             if self.skip_detailed_info:
                 detailed = result
@@ -190,12 +202,21 @@ class TrackMatcher:
 
             # Skip if title similarity too low
             if title_similarity < self.min_title_similarity:
+                emit("skipped", reason="low_similarity", similarity=title_similarity)
                 continue
 
             # Skip if duration is way off (more than 2x threshold)
             duration_diff = abs(track.duration_seconds - detailed.duration_seconds)
             if duration_diff > self.duration_threshold * 2:
+                emit("skipped", reason="duration_mismatch", diff=duration_diff)
                 continue
+
+            emit(
+                "candidate_accepted",
+                title=detailed.title[:50],
+                bitrate=detailed.audio_bitrate,
+                similarity=title_similarity,
+            )
 
             candidates.append(
                 MatchResult(
@@ -208,10 +229,17 @@ class TrackMatcher:
             )
 
         if not candidates:
+            emit("no_valid_candidates")
             return None
 
         # Get best match
         best = max(candidates, key=lambda m: m.combined_score)
+        emit(
+            "best_match",
+            title=best.youtube_result.title[:50],
+            bitrate=best.audio_bitrate,
+            similarity=best.title_similarity,
+        )
 
         # Cache result
         if self.cache:
@@ -255,6 +283,7 @@ class TrackMatcher:
         max_candidates: int = 10,
         max_workers: int = 8,
         on_complete: Callable[[Track, MatchResult | None], None] | None = None,
+        on_progress: Callable[[str, dict], None] | None = None,
     ) -> list[MatchResult]:
         """
         Find best YouTube matches for multiple tracks in parallel.
@@ -264,6 +293,7 @@ class TrackMatcher:
             max_candidates: Max search results per track
             max_workers: Maximum concurrent searches
             on_complete: Callback called for each completed match (track, result)
+            on_progress: Callback for detailed progress updates (event_type, data)
 
         Returns:
             List of MatchResult for successful matches (order preserved)
@@ -271,7 +301,7 @@ class TrackMatcher:
         results: dict[str, MatchResult | None] = {}
 
         def process_track(track: Track) -> tuple[Track, MatchResult | None]:
-            result = self.find_best_match(track, max_candidates)
+            result = self.find_best_match(track, max_candidates, on_progress=on_progress)
             return track, result
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

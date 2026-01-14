@@ -315,22 +315,135 @@ def clear_cache() -> None:
 
 @main.command()
 @click.option("--input", "-i", "input_file", type=click.Path(exists=True), help="Input file with YouTube URLs (.txt or .m3u)")
-@click.option("--output-dir", "-o", default="~/Music/SpotifyDownloads", help="Output directory for downloads")
-@click.option("--format", "-f", "audio_format", default="mp3", help="Audio format (mp3, opus, m4a, wav)")
-@click.option("--limit", "-l", default=20, help="Number of songs to match (if no input file)")
+@click.option("--output-dir", "-o", default=None, help="Output directory for downloads")
+@click.option("--format", "-f", "audio_format", default=None, help="Audio format (mp3, opus, m4a, wav)")
+@click.option("--limit", "-l", default=None, type=int, help="Number of songs to match (if no input file)")
 @click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
+@click.option("--interactive/--no-interactive", default=None, help="Force interactive/non-interactive mode")
 def download(
     input_file: str | None,
-    output_dir: str,
-    audio_format: str,
-    limit: int,
+    output_dir: str | None,
+    audio_format: str | None,
+    limit: int | None,
     keep_video: bool,
+    interactive: bool | None,
 ) -> None:
     """Download matched songs as audio files."""
     import subprocess
 
     show_banner(mini=True)
     console.print()
+
+    # Determine if we should run interactive mode
+    # Interactive if: explicitly requested, OR no options provided
+    run_interactive = interactive is True or (
+        interactive is None
+        and input_file is None
+        and output_dir is None
+        and audio_format is None
+        and limit is None
+        and not keep_video
+    )
+
+    if run_interactive:
+        console.print(
+            Panel(
+                "[bold cyan]Download Setup[/bold cyan]\n\n"
+                "I'll help you download your Spotify songs as audio files.",
+                border_style="cyan",
+            )
+        )
+        console.print()
+
+        # Question 1: Source
+        console.print("[bold]📂 Where should I get the songs from?[/bold]")
+        console.print("  [cyan]1.[/cyan] Match from Spotify (fetch liked songs and find YouTube matches)")
+        console.print("  [cyan]2.[/cyan] Use existing playlist file (.txt or .m3u)")
+
+        source_choice = Prompt.ask(
+            "  Choose source",
+            choices=["1", "2"],
+            default="1",
+            console=console,
+        )
+        console.print()
+
+        if source_choice == "2":
+            input_file = Prompt.ask(
+                "  Path to playlist file",
+                console=console,
+            )
+            if not Path(input_file).exists():
+                console.print(f"[red]File not found: {input_file}[/red]")
+                sys.exit(1)
+        else:
+            # Question: How many songs
+            console.print("[bold]🎵 How many songs to download?[/bold]")
+            console.print("[dim]  Suggestions: 10 (quick), 25, 50, 100[/dim]")
+            limit = IntPrompt.ask(
+                "  Number of songs",
+                default=20,
+                console=console,
+            )
+            console.print()
+
+        # Question 2: Output directory
+        console.print("[bold]📁 Where should I save the files?[/bold]")
+        default_dir = "~/Music/SpotifyDownloads"
+        output_dir = Prompt.ask(
+            "  Output directory",
+            default=default_dir,
+            console=console,
+        )
+        console.print()
+
+        # Question 3: Audio format
+        console.print("[bold]🎧 What audio format?[/bold]")
+        console.print("  [cyan]1.[/cyan] mp3  - Universal compatibility (recommended)")
+        console.print("  [cyan]2.[/cyan] opus - Best quality/size ratio")
+        console.print("  [cyan]3.[/cyan] m4a  - Apple/iTunes compatible")
+        console.print("  [cyan]4.[/cyan] wav  - Lossless (large files)")
+
+        format_choice = Prompt.ask(
+            "  Choose format",
+            choices=["1", "2", "3", "4", "mp3", "opus", "m4a", "wav"],
+            default="1",
+            console=console,
+        )
+        format_map = {"1": "mp3", "2": "opus", "3": "m4a", "4": "wav"}
+        audio_format = format_map.get(format_choice, format_choice)
+        console.print()
+
+        # Summary
+        summary_table = Table.grid(padding=(0, 2))
+        summary_table.add_column(style="cyan")
+        summary_table.add_column(style="bold")
+
+        if input_file:
+            summary_table.add_row("Source:", f"File: {input_file}")
+        else:
+            summary_table.add_row("Source:", f"Spotify ({limit} songs)")
+        summary_table.add_row("Output:", output_dir)
+        summary_table.add_row("Format:", audio_format)
+
+        console.print(Panel(summary_table, title="[bold]📋 Download Settings[/bold]", border_style="green"))
+        console.print()
+
+        if not Confirm.ask("[bold]Start download?[/bold]", default=True, console=console):
+            console.print("\n[dim]Cancelled.[/dim]")
+            return
+
+        console.print()
+        console.print("[dim]─" * 60 + "[/dim]")
+        console.print()
+
+    # Apply defaults for non-interactive mode
+    if output_dir is None:
+        output_dir = "~/Music/SpotifyDownloads"
+    if audio_format is None:
+        audio_format = "mp3"
+    if limit is None:
+        limit = 20
 
     # Expand ~ in path
     output_path = Path(output_dir).expanduser()

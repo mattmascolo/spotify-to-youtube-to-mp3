@@ -279,6 +279,40 @@ def auth() -> None:
     )
 
 
+@main.command("clear-cache")
+def clear_cache() -> None:
+    """Clear all cached YouTube match results."""
+    show_banner(mini=True)
+    console.print()
+
+    cache = MatchCache()
+    cache_dir = cache.cache_dir
+
+    # Count files before clearing
+    cache_files = list(cache_dir.glob("*.json"))
+    count = len(cache_files)
+
+    if count == 0:
+        console.print(
+            Panel(
+                "[dim]Cache is already empty.[/dim]",
+                title="Cache Status",
+                border_style="dim",
+            )
+        )
+        return
+
+    cache.clear()
+    console.print(
+        Panel(
+            f"[green]✓[/green] Cleared [bold]{count}[/bold] cached entries.\n\n"
+            f"[dim]Location: {cache_dir}[/dim]",
+            title="Cache Cleared",
+            border_style="green",
+        )
+    )
+
+
 @main.command()
 @click.option("--limit", "-l", default=50, help="Maximum number of tracks to fetch")
 @click.option("--output", "-o", type=click.Path(), help="Output file path (default: stdout)")

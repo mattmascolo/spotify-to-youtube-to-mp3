@@ -626,12 +626,26 @@ def run_match(
         try:
             exporter.export(matches, output_path)
             console.print()
+
+            # Show appropriate download instructions based on format
+            ext = output_path.suffix.lower()
+            if ext in (".txt", ".m3u"):
+                download_hint = (
+                    f"[dim]Download as MP3 with:[/dim]\n"
+                    f"  [bold]yt-dlp -x --audio-format mp3 -a {output}[/bold]"
+                )
+            elif ext == ".json":
+                download_hint = "[dim]JSON format for data processing/backup[/dim]"
+            elif ext == ".csv":
+                download_hint = "[dim]CSV format for spreadsheets[/dim]"
+            else:
+                download_hint = ""
+
             console.print(
                 Panel(
                     f"[green]✓[/green] Exported [bold]{len(matches)}[/bold] matches to "
-                    f"[cyan]{output}[/cyan]\n\n"
-                    f"[dim]Download with:[/dim]\n"
-                    f"  [bold]yt-dlp -x --audio-format mp3 -a {output}[/bold]",
+                    f"[cyan]{output}[/cyan]"
+                    + (f"\n\n{download_hint}" if download_hint else ""),
                     title="[bold]💾 EXPORTED[/bold]",
                     border_style="green",
                 )

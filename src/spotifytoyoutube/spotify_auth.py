@@ -10,7 +10,7 @@ class SpotifyAuthenticator:
     """Handles Spotify OAuth authentication with token caching."""
 
     REQUIRED_SCOPES = ["user-library-read"]
-    DEFAULT_REDIRECT_URI = "http://localhost:8888/callback"
+    DEFAULT_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
     def __init__(
         self,

@@ -6,7 +6,15 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from spotifytoyoutube.export import Exporter
@@ -17,17 +25,48 @@ from spotifytoyoutube.youtube_search import YouTubeSearcher
 
 console = Console()
 
+BANNER = """
+[bold green]
+  ██████  ██▓███   ▒█████  ▄▄▄█████▓ ██▓  █████▒▓██   ██▓
+▒██    ▒ ▓██░  ██▒▒██▒  ██▒▓  ██▒ ▓▒▓██▒▓██   ▒  ▒██  ██▒
+░ ▓██▄   ▓██░ ██▓▒▒██░  ██▒▒ ▓██░ ▒░▒██▒▒████ ░   ▒██ ██░
+  ▒   ██▒▒██▄█▓▒ ▒▒██   ██░░ ▓██▓ ░ ░██░░▓█▒  ░   ░ ▐██▓░
+▒██████▒▒▒██▒ ░  ░░ ████▓▒░  ▒██▒ ░ ░██░░▒█░      ░ ██▒▓░
+▒ ▒▓▒ ▒ ░▒▓▒░ ░  ░░ ▒░▒░▒░   ▒ ░░   ░▓   ▒ ░       ██▒▒▒
+░ ░▒  ░ ░░▒ ░       ░ ▒ ▒░     ░     ▒ ░ ░       ▓██ ░▒░
+░  ░  ░  ░░       ░ ░ ░ ▒    ░       ▒ ░ ░ ░     ▒ ▒ ░░
+      ░               ░ ░            ░           ░ ░
+[/bold green][bold red]
+                    ▄▄▄█████▓ ▒█████
+                    ▓  ██▒ ▓▒▒██▒  ██▒
+                    ▒ ▓██░ ▒░▒██░  ██▒
+                    ░ ▓██▓ ░ ▒██   ██░
+                      ▒██▒ ░ ░ ████▓▒░
+                      ▒ ░░   ░ ▒░▒░▒░
+                        ░      ░ ▒ ▒░
+                      ░      ░ ░ ░ ▒
+                                 ░ ░
+[/bold red][bold yellow]
+██    ██  ▒█████   █    ██ ▄▄▄█████▓ █    ██  ▄▄▄▄   ▓█████
+ ██  ██  ▒██▒  ██▒ ██  ▓██▒▓  ██▒ ▓▒ ██  ▓██▒▓█████▄ ▓█   ▀
+  ▐█▀▐█  ▒██░  ██▒▓██  ▒██░▒ ▓██░ ▒░▓██  ▒██░▒██▒ ▄██▒███
+   ██ ██▄▒██   ██░▓▓█  ░██░░ ▓██▓ ░ ▓▓█  ░██░▒██░█▀  ▒▓█  ▄
+  ▓██▒ █▓░ ████▓▒░▒▒█████▓   ▒██▒ ░ ▒▒█████▓ ░▓█  ▀█▓░▒████▒
+  ▒ ▒▓▒ ▒░░ ▒░▒░▒░ ░▒▓▒ ▒ ▒  ▒ ░░   ░▒▓▒ ▒ ▒ ░▒▓███▀▒░░ ▒░ ░
+  ░ ░▒  ░   ░ ▒ ▒░ ░░▒░ ░ ░    ░    ░░▒░ ░ ░ ▒░▒   ░  ░ ░  ░
+  ░  ░  ░ ░ ░ ░ ▒   ░░░ ░ ░  ░       ░░░ ░ ░  ░    ░    ░
+        ░     ░ ░     ░                ░      ░         ░  ░
+[/bold yellow]
+[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
+[bold white]       🎵 Find the HIGHEST QUALITY YouTube matches for your Spotify 🎵[/bold white]
+[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
+"""
+
+MINI_BANNER = """[bold green]♫[/bold green] [bold white]Spotify[/bold white][bold red]→[/bold red][bold yellow]YouTube[/bold yellow] [bold green]♫[/bold green]"""
+
 
 def get_spotify_credentials() -> tuple[str, str]:
-    """
-    Get Spotify credentials from environment.
-
-    Returns:
-        Tuple of (client_id, client_secret)
-
-    Raises:
-        click.ClickException: If credentials not found
-    """
+    """Get Spotify credentials from environment."""
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
@@ -40,6 +79,14 @@ def get_spotify_credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
+def show_banner(mini: bool = False) -> None:
+    """Display the application banner."""
+    if mini:
+        console.print(MINI_BANNER, justify="center")
+    else:
+        console.print(BANNER)
+
+
 @click.group()
 @click.version_option()
 def main() -> None:
@@ -50,107 +97,108 @@ def main() -> None:
 @main.command()
 def auth() -> None:
     """Authenticate with Spotify and verify credentials."""
+    show_banner(mini=True)
+    console.print()
+
     try:
         client_id, client_secret = get_spotify_credentials()
     except click.ClickException as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
         sys.exit(1)
 
-    console.print("Authenticating with Spotify...")
+    with console.status("[bold cyan]🔐 Connecting to Spotify...[/bold cyan]", spinner="dots"):
+        try:
+            authenticator = SpotifyAuthenticator(
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            sp = authenticator.get_client()
+            user = sp.current_user()
+        except Exception as e:
+            console.print(Panel(f"[red]✗[/red] {e}", title="Auth Failed", border_style="red"))
+            sys.exit(1)
 
-    try:
-        authenticator = SpotifyAuthenticator(
-            client_id=client_id,
-            client_secret=client_secret,
+    console.print(
+        Panel(
+            f"[green]✓[/green] Authenticated as [bold cyan]{user['display_name']}[/bold cyan]",
+            title="Success",
+            border_style="green",
         )
-        sp = authenticator.get_client()
-        user = sp.current_user()
-
-        console.print(f"[green]Success![/green] Authenticated as: {user['display_name']}")
-    except Exception as e:
-        console.print(f"[red]Authentication failed:[/red] {e}")
-        sys.exit(1)
+    )
 
 
 @main.command()
-@click.option(
-    "--limit", "-l",
-    default=50,
-    help="Maximum number of tracks to fetch",
-)
-@click.option(
-    "--output", "-o",
-    type=click.Path(),
-    help="Output file path (default: stdout)",
-)
+@click.option("--limit", "-l", default=50, help="Maximum number of tracks to fetch")
+@click.option("--output", "-o", type=click.Path(), help="Output file path (default: stdout)")
 def fetch(limit: int, output: str | None) -> None:
     """Fetch liked songs from Spotify."""
+    show_banner(mini=True)
+    console.print()
+
     try:
         client_id, client_secret = get_spotify_credentials()
     except click.ClickException as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
         sys.exit(1)
 
-    authenticator = SpotifyAuthenticator(
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+    authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
     sp = authenticator.get_client()
     client = SpotifyClient(sp)
 
     tracks: list[Track] = []
 
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(style="green"),
+        TextColumn("[bold blue]{task.description}[/bold blue]"),
+        BarColumn(bar_width=40, style="green", complete_style="bold green"),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Fetching liked songs...", total=None)
+        task = progress.add_task("🎵 Fetching liked songs...", total=limit)
 
         for track in client.get_liked_songs(max_tracks=limit):
             tracks.append(track)
-            progress.update(task, description=f"Fetched {len(tracks)} tracks...")
+            progress.update(task, completed=len(tracks))
+            progress.update(
+                task, description=f"🎵 Found: [cyan]{track.artist}[/cyan] - {track.name}"
+            )
+
+    console.print()
 
     # Create output table
-    table = Table(title=f"Liked Songs ({len(tracks)} tracks)")
+    table = Table(
+        title=f"[bold]💿 Your Liked Songs ({len(tracks)} tracks)[/bold]",
+        border_style="cyan",
+        header_style="bold magenta",
+    )
+    table.add_column("#", style="dim", width=4)
     table.add_column("Artist", style="cyan")
     table.add_column("Song", style="green")
     table.add_column("Album", style="dim")
 
-    for track in tracks:
-        table.add_row(track.artist, track.name, track.album)
+    for i, track in enumerate(tracks, 1):
+        table.add_row(str(i), track.artist, track.name, track.album)
 
     if output:
-        # Write to file as simple list
         with open(output, "w") as f:
             for track in tracks:
                 f.write(f"{track.search_query}\n")
-        console.print(f"[green]Saved {len(tracks)} tracks to {output}[/green]")
+        console.print(
+            Panel(
+                f"[green]✓[/green] Saved [bold]{len(tracks)}[/bold] tracks to [cyan]{output}[/cyan]",
+                border_style="green",
+            )
+        )
     else:
         console.print(table)
 
 
 @main.command()
-@click.option(
-    "--limit", "-l",
-    default=10,
-    help="Maximum number of tracks to match",
-)
-@click.option(
-    "--output", "-o",
-    type=click.Path(),
-    help="Output file for YouTube URLs",
-)
-@click.option(
-    "--duration-threshold", "-d",
-    default=10,
-    help="Max duration difference in seconds",
-)
-@click.option(
-    "--verbose", "-v",
-    is_flag=True,
-    help="Show detailed match information",
-)
+@click.option("--limit", "-l", default=10, help="Maximum number of tracks to match")
+@click.option("--output", "-o", type=click.Path(), help="Output file for YouTube URLs")
+@click.option("--duration-threshold", "-d", default=10, help="Max duration difference in seconds")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed match information")
 def match(
     limit: int,
     output: str | None,
@@ -158,86 +206,166 @@ def match(
     verbose: bool,
 ) -> None:
     """Find YouTube matches for liked songs."""
+    show_banner()
+
     try:
         client_id, client_secret = get_spotify_credentials()
     except click.ClickException as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
         sys.exit(1)
 
     # Setup clients
-    authenticator = SpotifyAuthenticator(
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+    authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
     sp = authenticator.get_client()
     spotify_client = SpotifyClient(sp)
     youtube_searcher = YouTubeSearcher(quiet=True)
-    matcher = TrackMatcher(
-        youtube_searcher,
-        duration_threshold=duration_threshold,
-    )
+    matcher = TrackMatcher(youtube_searcher, duration_threshold=duration_threshold)
 
     # Fetch tracks
     tracks: list[Track] = []
-    console.print("Fetching liked songs from Spotify...")
 
-    for track in spotify_client.get_liked_songs(max_tracks=limit):
-        tracks.append(track)
+    console.print(
+        Panel(
+            "[bold cyan]📡 PHASE 1:[/bold cyan] Connecting to Spotify API...",
+            border_style="cyan",
+        )
+    )
 
-    console.print(f"Found {len(tracks)} tracks. Finding YouTube matches...")
+    with console.status("[bold green]🎵 Loading your liked songs...[/bold green]", spinner="dots"):
+        for track in spotify_client.get_liked_songs(max_tracks=limit):
+            tracks.append(track)
+
+    console.print(f"    [green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks from Spotify\n")
 
     # Match tracks
+    console.print(
+        Panel(
+            "[bold yellow]🔍 PHASE 2:[/bold yellow] Searching YouTube for best quality matches...",
+            border_style="yellow",
+        )
+    )
+
     matches: list[MatchResult] = []
+    failed: list[Track] = []
 
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(style="yellow"),
+        TextColumn("[bold]{task.description}[/bold]"),
+        BarColumn(bar_width=40, style="yellow", complete_style="bold yellow"),
+        TaskProgressColumn(),
+        TextColumn("[dim]•[/dim]"),
+        TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Matching...", total=len(tracks))
+        task = progress.add_task("Initializing...", total=len(tracks))
 
-        for track in tracks:
+        for i, track in enumerate(tracks, 1):
             progress.update(
                 task,
-                description=f"Matching: {track.artist} - {track.name}",
+                description=f"[cyan]{track.artist}[/cyan] - {track.name[:30]}",
             )
+
             result = matcher.find_best_match(track)
+
             if result:
                 matches.append(result)
+                if verbose:
+                    console.print(
+                        f"    [green]✓[/green] [dim]#{i}[/dim] "
+                        f"[cyan]{track.artist}[/cyan] - {track.name}\n"
+                        f"      [dim]└─►[/dim] [yellow]{result.youtube_result.title[:50]}[/yellow]\n"
+                        f"          [dim]Quality:[/dim] [bold green]{result.audio_bitrate:.0f}kbps[/bold green] "
+                        f"[dim]│[/dim] [dim]Match:[/dim] [bold]{result.title_similarity:.0%}[/bold] "
+                        f"[dim]│[/dim] [dim]URL:[/dim] [blue]{result.youtube_result.url}[/blue]"
+                    )
+            else:
+                failed.append(track)
+                if verbose:
+                    console.print(
+                        f"    [red]✗[/red] [dim]#{i}[/dim] "
+                        f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
+                    )
+
             progress.advance(task)
 
-    # Output results
-    console.print(f"\n[green]Found {len(matches)}/{len(tracks)} matches[/green]\n")
+    # Summary
+    console.print()
+    success_rate = len(matches) / len(tracks) * 100 if tracks else 0
 
-    if verbose:
-        table = Table(title="YouTube Matches")
-        table.add_column("Spotify Track", style="cyan")
-        table.add_column("YouTube Match", style="green")
-        table.add_column("Bitrate", style="yellow")
-        table.add_column("Similarity", style="dim")
+    summary_table = Table.grid(padding=(0, 2))
+    summary_table.add_column(style="bold")
+    summary_table.add_column()
 
-        for m in matches:
+    summary_table.add_row("📊 Total Tracks:", f"[bold]{len(tracks)}[/bold]")
+    summary_table.add_row("✅ Matched:", f"[bold green]{len(matches)}[/bold green]")
+    summary_table.add_row("❌ Failed:", f"[bold red]{len(failed)}[/bold red]")
+    summary_table.add_row("📈 Success Rate:", f"[bold cyan]{success_rate:.1f}%[/bold cyan]")
+
+    if matches:
+        avg_bitrate = sum(m.audio_bitrate for m in matches) / len(matches)
+        avg_similarity = sum(m.title_similarity for m in matches) / len(matches)
+        summary_table.add_row("🎧 Avg Bitrate:", f"[bold yellow]{avg_bitrate:.0f}kbps[/bold yellow]")
+        summary_table.add_row("🎯 Avg Match:", f"[bold]{avg_similarity:.0%}[/bold]")
+
+    console.print(Panel(summary_table, title="[bold]📋 RESULTS[/bold]", border_style="green"))
+
+    # Output table if verbose
+    if verbose and matches:
+        console.print()
+        table = Table(
+            title="[bold]🎬 YouTube Matches[/bold]",
+            border_style="yellow",
+            header_style="bold magenta",
+        )
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Spotify Track", style="cyan", max_width=35)
+        table.add_column("YouTube Match", style="green", max_width=40)
+        table.add_column("Quality", style="yellow", justify="right")
+        table.add_column("Match", style="bold", justify="right")
+
+        for i, m in enumerate(matches, 1):
+            quality_color = "green" if m.audio_bitrate >= 256 else "yellow" if m.audio_bitrate >= 128 else "red"
             table.add_row(
-                m.track.search_query,
-                m.youtube_result.title[:50],
-                f"{m.audio_bitrate}kbps",
+                str(i),
+                m.track.search_query[:35],
+                m.youtube_result.title[:40],
+                f"[{quality_color}]{m.audio_bitrate:.0f}kbps[/{quality_color}]",
                 f"{m.title_similarity:.0%}",
             )
 
         console.print(table)
-    else:
-        for m in matches:
-            console.print(m.youtube_result.url)
 
+    # Print URLs if not verbose
+    if not verbose and matches:
+        console.print()
+        console.print(Panel("[bold]🔗 YouTube URLs[/bold]", border_style="blue"))
+        for m in matches:
+            console.print(f"  [blue]{m.youtube_result.url}[/blue]")
+
+    # Export
     if output:
         output_path = Path(output)
         exporter = Exporter()
         try:
             exporter.export(matches, output_path)
-            console.print(f"\n[green]Saved {len(matches)} matches to {output}[/green]")
+            console.print()
+            console.print(
+                Panel(
+                    f"[green]✓[/green] Exported [bold]{len(matches)}[/bold] matches to "
+                    f"[cyan]{output}[/cyan]\n\n"
+                    f"[dim]Download with:[/dim]\n"
+                    f"  [bold]yt-dlp -x --audio-format mp3 -a {output}[/bold]",
+                    title="[bold]💾 EXPORTED[/bold]",
+                    border_style="green",
+                )
+            )
         except ValueError as e:
-            console.print(f"[red]Export error:[/red] {e}")
+            console.print(Panel(f"[red]✗[/red] {e}", title="Export Error", border_style="red"))
             sys.exit(1)
+
+    console.print()
+    console.print("[dim]━" * 78 + "[/dim]")
+    console.print("[dim]Thanks for using Spotify→YouTube! 🎵[/dim]", justify="center")
 
 
 if __name__ == "__main__":

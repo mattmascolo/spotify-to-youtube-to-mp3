@@ -16,6 +16,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
 from spotifytoyoutube.cache import MatchCache
@@ -92,11 +93,157 @@ def show_banner(mini: bool = False) -> None:
         console.print(BANNER)
 
 
-@click.group()
+def interactive_wizard() -> None:
+    """Interactive wizard for matching Spotify songs to YouTube."""
+    show_banner()
+
+    console.print(
+        Panel(
+            "[bold cyan]Welcome to the Interactive Setup![/bold cyan]\n\n"
+            "I'll ask you a few questions to get started.\n"
+            "Press [bold]Ctrl+C[/bold] anytime to exit.",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    # Check credentials first
+    try:
+        client_id, client_secret = get_spotify_credentials()
+    except click.ClickException:
+        console.print(
+            Panel(
+                "[red]✗ Spotify credentials not found![/red]\n\n"
+                "Please set these environment variables:\n"
+                "  [cyan]export SPOTIFY_CLIENT_ID='your_client_id'[/cyan]\n"
+                "  [cyan]export SPOTIFY_CLIENT_SECRET='your_client_secret'[/cyan]\n\n"
+                "[dim]Get credentials at: https://developer.spotify.com/dashboard[/dim]",
+                title="Setup Required",
+                border_style="red",
+            )
+        )
+        sys.exit(1)
+
+    console.print("[green]✓[/green] Spotify credentials found!\n")
+
+    # Question 1: Number of songs
+    console.print("[bold]📊 How many songs would you like to match?[/bold]")
+    console.print("[dim]  Suggestions: 10 (quick test), 50 (default), 100, 500, or custom[/dim]")
+    limit = IntPrompt.ask(
+        "  Number of songs",
+        default=50,
+        console=console,
+    )
+    console.print()
+
+    # Question 2: Speed mode
+    console.print("[bold]⚡ Speed mode[/bold]")
+    console.print("[dim]  Fast mode searches YouTube in parallel (much faster!)[/dim]")
+    fast = Confirm.ask("  Enable fast mode?", default=True, console=console)
+    console.print()
+
+    # Question 3: Workers (if fast mode)
+    workers = 8
+    if fast:
+        console.print("[bold]👷 Parallel workers[/bold]")
+        console.print("[dim]  More workers = faster, but may hit rate limits[/dim]")
+        console.print("[dim]  Suggestions: 4 (gentle), 8 (balanced), 16 (aggressive)[/dim]")
+        workers = IntPrompt.ask(
+            "  Number of workers",
+            default=8,
+            console=console,
+        )
+        console.print()
+
+    # Question 4: Verbose output
+    console.print("[bold]📝 Verbose output[/bold]")
+    console.print("[dim]  Shows detailed progress and match information[/dim]")
+    verbose = Confirm.ask("  Enable verbose output?", default=True, console=console)
+    console.print()
+
+    # Question 5: Export options
+    console.print("[bold]💾 Export results[/bold]")
+    console.print("[dim]  Save matches to a file for downloading later[/dim]")
+    export = Confirm.ask("  Export to file?", default=True, console=console)
+
+    output_path = None
+    if export:
+        console.print()
+        console.print("[bold]📁 Export format[/bold]")
+        console.print("  [cyan]1.[/cyan] m3u  - Playlist file (works with yt-dlp)")
+        console.print("  [cyan]2.[/cyan] json - Full data export")
+        console.print("  [cyan]3.[/cyan] csv  - Spreadsheet format")
+        console.print("  [cyan]4.[/cyan] txt  - Simple URL list")
+
+        format_choice = Prompt.ask(
+            "  Choose format",
+            choices=["1", "2", "3", "4", "m3u", "json", "csv", "txt"],
+            default="1",
+            console=console,
+        )
+
+        format_map = {"1": "m3u", "2": "json", "3": "csv", "4": "txt"}
+        file_format = format_map.get(format_choice, format_choice)
+
+        default_filename = f"spotify_matches.{file_format}"
+        console.print()
+        output_path = Prompt.ask(
+            "  Filename",
+            default=default_filename,
+            console=console,
+        )
+
+    console.print()
+
+    # Question 6: Caching
+    console.print("[bold]🗄️  Caching[/bold]")
+    console.print("[dim]  Cache results to speed up future runs (recommended)[/dim]")
+    use_cache = Confirm.ask("  Enable caching?", default=True, console=console)
+    console.print()
+
+    # Summary
+    summary_table = Table.grid(padding=(0, 2))
+    summary_table.add_column(style="cyan")
+    summary_table.add_column(style="bold")
+
+    summary_table.add_row("Songs to match:", str(limit))
+    summary_table.add_row("Speed mode:", f"{'⚡ Fast' if fast else '🐢 Normal'} ({workers} workers)" if fast else "🐢 Normal")
+    summary_table.add_row("Verbose:", "Yes" if verbose else "No")
+    summary_table.add_row("Export:", output_path if output_path else "No")
+    summary_table.add_row("Caching:", "Enabled" if use_cache else "Disabled")
+
+    console.print(Panel(summary_table, title="[bold]📋 Your Settings[/bold]", border_style="green"))
+    console.print()
+
+    if not Confirm.ask("[bold]Ready to start?[/bold]", default=True, console=console):
+        console.print("\n[dim]Cancelled. Run again when you're ready![/dim]")
+        return
+
+    console.print()
+    console.print("[dim]─" * 60 + "[/dim]")
+    console.print()
+
+    # Run the match command with selected options
+    run_match(
+        limit=limit,
+        output=output_path,
+        duration_threshold=10,
+        verbose=verbose,
+        fast=fast,
+        workers=workers,
+        no_cache=not use_cache,
+        show_banner_=False,  # Already shown at wizard start
+    )
+
+
+@click.group(invoke_without_command=True)
 @click.version_option()
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """Fetch Spotify liked songs and find highest quality YouTube matches."""
-    pass
+    if ctx.invoked_subcommand is None:
+        # No subcommand provided, run interactive wizard
+        interactive_wizard()
 
 
 @main.command()
@@ -199,15 +346,7 @@ def fetch(limit: int, output: str | None) -> None:
         console.print(table)
 
 
-@main.command()
-@click.option("--limit", "-l", default=10, help="Maximum number of tracks to match")
-@click.option("--output", "-o", type=click.Path(), help="Output file for YouTube URLs")
-@click.option("--duration-threshold", "-d", default=10, help="Max duration difference in seconds")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed match information")
-@click.option("--fast", "-f", is_flag=True, help="Fast mode: parallel searches, skip detailed info")
-@click.option("--workers", "-w", default=8, help="Number of parallel workers (with --fast)")
-@click.option("--no-cache", is_flag=True, help="Disable result caching")
-def match(
+def run_match(
     limit: int,
     output: str | None,
     duration_threshold: int,
@@ -215,9 +354,11 @@ def match(
     fast: bool,
     workers: int,
     no_cache: bool,
+    show_banner_: bool = True,
 ) -> None:
-    """Find YouTube matches for liked songs."""
-    show_banner()
+    """Core match logic - find YouTube matches for liked songs."""
+    if show_banner_:
+        show_banner()
 
     try:
         client_id, client_secret = get_spotify_credentials()
@@ -468,6 +609,35 @@ def match(
     console.print()
     console.print("[dim]━" * 78 + "[/dim]")
     console.print("[dim]Thanks for using Spotify→YouTube! 🎵[/dim]", justify="center")
+
+
+@main.command()
+@click.option("--limit", "-l", default=10, help="Maximum number of tracks to match")
+@click.option("--output", "-o", type=click.Path(), help="Output file for YouTube URLs")
+@click.option("--duration-threshold", "-d", default=10, help="Max duration difference in seconds")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed match information")
+@click.option("--fast", "-f", is_flag=True, help="Fast mode: parallel searches, skip detailed info")
+@click.option("--workers", "-w", default=8, help="Number of parallel workers (with --fast)")
+@click.option("--no-cache", is_flag=True, help="Disable result caching")
+def match(
+    limit: int,
+    output: str | None,
+    duration_threshold: int,
+    verbose: bool,
+    fast: bool,
+    workers: int,
+    no_cache: bool,
+) -> None:
+    """Find YouTube matches for liked songs."""
+    run_match(
+        limit=limit,
+        output=output,
+        duration_threshold=duration_threshold,
+        verbose=verbose,
+        fast=fast,
+        workers=workers,
+        no_cache=no_cache,
+    )
 
 
 if __name__ == "__main__":

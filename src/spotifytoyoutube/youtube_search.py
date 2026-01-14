@@ -27,12 +27,29 @@ class YouTubeResult:
         Returns:
             YouTubeResult instance
         """
+        # Try to get bitrate from top-level, otherwise extract from formats
+        audio_bitrate = info.get("abr") or 0
+        audio_codec = info.get("acodec") or "unknown"
+
+        if not audio_bitrate:
+            # Extract best audio bitrate from formats list
+            formats = info.get("formats", [])
+            audio_formats = [
+                f for f in formats
+                if f.get("acodec") and f.get("acodec") != "none"
+                and (not f.get("vcodec") or f.get("vcodec") == "none")
+            ]
+            if audio_formats:
+                best = max(audio_formats, key=lambda f: f.get("abr") or 0)
+                audio_bitrate = best.get("abr") or 0
+                audio_codec = best.get("acodec") or "unknown"
+
         return cls(
             video_id=info.get("id", ""),
             title=info.get("title", ""),
             duration_seconds=info.get("duration", 0) or 0,
-            audio_bitrate=info.get("abr", 0) or 0,
-            audio_codec=info.get("acodec", "unknown"),
+            audio_bitrate=int(audio_bitrate),
+            audio_codec=audio_codec,
         )
 
     @property

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
+from spotifytoyoutube.cache import MatchCache, RateLimiter
 from spotifytoyoutube.spotify_client import Track
 from spotifytoyoutube.youtube_search import YouTubeResult, YouTubeSearcher
 
@@ -89,6 +90,8 @@ class TrackMatcher:
         searcher: YouTubeSearcher,
         duration_threshold: int = 10,
         min_title_similarity: float = 0.5,
+        cache: MatchCache | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         """
         Initialize track matcher.
@@ -97,10 +100,14 @@ class TrackMatcher:
             searcher: YouTubeSearcher instance
             duration_threshold: Max duration difference in seconds
             min_title_similarity: Minimum title similarity to consider
+            cache: Optional MatchCache for caching results
+            rate_limiter: Optional RateLimiter for API rate limiting
         """
         self.searcher = searcher
         self.duration_threshold = duration_threshold
         self.min_title_similarity = min_title_similarity
+        self.cache = cache
+        self.rate_limiter = rate_limiter
 
     def find_best_match(
         self,
@@ -119,6 +126,29 @@ class TrackMatcher:
         Returns:
             Best MatchResult, or None if no suitable match found
         """
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get(track.id)
+            if cached:
+                yt_result = YouTubeResult(
+                    video_id=cached["video_id"],
+                    title=cached["title"],
+                    duration_seconds=cached["duration_seconds"],
+                    audio_bitrate=cached["audio_bitrate"],
+                    audio_codec=cached.get("audio_codec", "unknown"),
+                )
+                return MatchResult(
+                    track=track,
+                    youtube_result=yt_result,
+                    title_similarity=cached["title_similarity"],
+                    duration_match=cached["duration_match"],
+                    audio_bitrate=cached["audio_bitrate"],
+                )
+
+        # Rate limit if configured
+        if self.rate_limiter:
+            self.rate_limiter.wait()
+
         # Search YouTube
         search_results = self.searcher.search(
             track.search_query,
@@ -131,6 +161,9 @@ class TrackMatcher:
         candidates: list[MatchResult] = []
 
         for result in search_results:
+            if self.rate_limiter:
+                self.rate_limiter.wait()
+
             # Get detailed video info for accurate bitrate
             detailed = self.searcher.get_video_info(result.video_id)
             if not detailed:
@@ -170,8 +203,22 @@ class TrackMatcher:
         if not candidates:
             return None
 
-        # Return best match by combined score
-        return max(candidates, key=lambda m: m.combined_score)
+        # Get best match
+        best = max(candidates, key=lambda m: m.combined_score)
+
+        # Cache result
+        if self.cache:
+            self.cache.set(track.id, {
+                "video_id": best.youtube_result.video_id,
+                "title": best.youtube_result.title,
+                "duration_seconds": best.youtube_result.duration_seconds,
+                "audio_bitrate": best.audio_bitrate,
+                "audio_codec": best.youtube_result.audio_codec,
+                "title_similarity": best.title_similarity,
+                "duration_match": best.duration_match,
+            })
+
+        return best
 
     def find_matches(
         self,

@@ -1,5 +1,7 @@
 """Track matching algorithm prioritizing audio quality."""
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -92,6 +94,7 @@ class TrackMatcher:
         min_title_similarity: float = 0.5,
         cache: MatchCache | None = None,
         rate_limiter: RateLimiter | None = None,
+        skip_detailed_info: bool = False,
     ) -> None:
         """
         Initialize track matcher.
@@ -102,12 +105,14 @@ class TrackMatcher:
             min_title_similarity: Minimum title similarity to consider
             cache: Optional MatchCache for caching results
             rate_limiter: Optional RateLimiter for API rate limiting
+            skip_detailed_info: Skip fetching detailed video info (faster)
         """
         self.searcher = searcher
         self.duration_threshold = duration_threshold
         self.min_title_similarity = min_title_similarity
         self.cache = cache
         self.rate_limiter = rate_limiter
+        self.skip_detailed_info = skip_detailed_info
 
     def find_best_match(
         self,
@@ -161,13 +166,15 @@ class TrackMatcher:
         candidates: list[MatchResult] = []
 
         for result in search_results:
-            if self.rate_limiter:
-                self.rate_limiter.wait()
-
-            # Get detailed video info for accurate bitrate
-            detailed = self.searcher.get_video_info(result.video_id)
-            if not detailed:
+            # Get detailed video info for accurate bitrate (unless skipped for speed)
+            if self.skip_detailed_info:
                 detailed = result
+            else:
+                if self.rate_limiter:
+                    self.rate_limiter.wait()
+                detailed = self.searcher.get_video_info(result.video_id)
+                if not detailed:
+                    detailed = result
 
             # Calculate match scores
             title_similarity = MatchScore.calculate_title_similarity(
@@ -226,7 +233,7 @@ class TrackMatcher:
         max_candidates: int = 10,
     ) -> list[MatchResult]:
         """
-        Find best YouTube matches for multiple tracks.
+        Find best YouTube matches for multiple tracks (sequential).
 
         Args:
             tracks: List of Spotify tracks
@@ -241,3 +248,40 @@ class TrackMatcher:
             if match:
                 results.append(match)
         return results
+
+    def find_matches_parallel(
+        self,
+        tracks: list[Track],
+        max_candidates: int = 10,
+        max_workers: int = 8,
+        on_complete: Callable[[Track, MatchResult | None], None] | None = None,
+    ) -> list[MatchResult]:
+        """
+        Find best YouTube matches for multiple tracks in parallel.
+
+        Args:
+            tracks: List of Spotify tracks
+            max_candidates: Max search results per track
+            max_workers: Maximum concurrent searches
+            on_complete: Callback called for each completed match (track, result)
+
+        Returns:
+            List of MatchResult for successful matches (order preserved)
+        """
+        results: dict[str, MatchResult | None] = {}
+
+        def process_track(track: Track) -> tuple[Track, MatchResult | None]:
+            result = self.find_best_match(track, max_candidates)
+            return track, result
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_track, track): track for track in tracks}
+
+            for future in as_completed(futures):
+                track, result = future.result()
+                results[track.id] = result
+                if on_complete:
+                    on_complete(track, result)
+
+        # Return in original order
+        return [results[t.id] for t in tracks if results.get(t.id) is not None]

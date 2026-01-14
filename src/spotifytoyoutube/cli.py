@@ -17,6 +17,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from spotifytoyoutube.cache import MatchCache
 from spotifytoyoutube.export import Exporter
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
@@ -199,11 +200,17 @@ def fetch(limit: int, output: str | None) -> None:
 @click.option("--output", "-o", type=click.Path(), help="Output file for YouTube URLs")
 @click.option("--duration-threshold", "-d", default=10, help="Max duration difference in seconds")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed match information")
+@click.option("--fast", "-f", is_flag=True, help="Fast mode: parallel searches, skip detailed info")
+@click.option("--workers", "-w", default=8, help="Number of parallel workers (with --fast)")
+@click.option("--no-cache", is_flag=True, help="Disable result caching")
 def match(
     limit: int,
     output: str | None,
     duration_threshold: int,
     verbose: bool,
+    fast: bool,
+    workers: int,
+    no_cache: bool,
 ) -> None:
     """Find YouTube matches for liked songs."""
     show_banner()
@@ -214,19 +221,28 @@ def match(
         console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
         sys.exit(1)
 
+    # Setup cache
+    cache = None if no_cache else MatchCache()
+
     # Setup clients
     authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
     sp = authenticator.get_client()
     spotify_client = SpotifyClient(sp)
     youtube_searcher = YouTubeSearcher(quiet=True)
-    matcher = TrackMatcher(youtube_searcher, duration_threshold=duration_threshold)
+    matcher = TrackMatcher(
+        youtube_searcher,
+        duration_threshold=duration_threshold,
+        cache=cache,
+        skip_detailed_info=fast,
+    )
 
     # Fetch tracks
     tracks: list[Track] = []
 
+    mode_info = "[bold magenta]⚡ FAST MODE[/bold magenta] " if fast else ""
     console.print(
         Panel(
-            "[bold cyan]📡 PHASE 1:[/bold cyan] Connecting to Spotify API...",
+            f"{mode_info}[bold cyan]📡 PHASE 1:[/bold cyan] Connecting to Spotify API...",
             border_style="cyan",
         )
     )
@@ -238,55 +254,93 @@ def match(
     console.print(f"    [green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks from Spotify\n")
 
     # Match tracks
+    parallel_info = f" [dim]({workers} parallel workers)[/dim]" if fast else ""
     console.print(
         Panel(
-            "[bold yellow]🔍 PHASE 2:[/bold yellow] Searching YouTube for best quality matches...",
+            f"[bold yellow]🔍 PHASE 2:[/bold yellow] Searching YouTube for best quality matches...{parallel_info}",
             border_style="yellow",
         )
     )
 
     matches: list[MatchResult] = []
     failed: list[Track] = []
+    completed_count = 0
 
-    with Progress(
-        SpinnerColumn(style="yellow"),
-        TextColumn("[bold]{task.description}[/bold]"),
-        BarColumn(bar_width=40, style="yellow", complete_style="bold yellow"),
-        TaskProgressColumn(),
-        TextColumn("[dim]•[/dim]"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Initializing...", total=len(tracks))
+    if fast:
+        # Parallel mode
+        with Progress(
+            SpinnerColumn(style="yellow"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=40, style="yellow", complete_style="bold yellow"),
+            TaskProgressColumn(),
+            TextColumn("[dim]•[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(f"[magenta]⚡ Parallel search ({workers} workers)...", total=len(tracks))
 
-        for i, track in enumerate(tracks, 1):
-            progress.update(
-                task,
-                description=f"[cyan]{track.artist}[/cyan] - {track.name[:30]}",
-            )
+            def on_complete(track: Track, result: MatchResult | None) -> None:
+                nonlocal completed_count
+                completed_count += 1
+                progress.update(task, completed=completed_count)
+                if result:
+                    matches.append(result)
+                    if verbose:
+                        console.print(
+                            f"    [green]✓[/green] [dim]#{completed_count}[/dim] "
+                            f"[cyan]{track.artist}[/cyan] - {track.name} "
+                            f"[dim]→[/dim] [yellow]{result.audio_bitrate:.0f}kbps[/yellow]"
+                        )
+                else:
+                    failed.append(track)
+                    if verbose:
+                        console.print(
+                            f"    [red]✗[/red] [dim]#{completed_count}[/dim] "
+                            f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
+                        )
 
-            result = matcher.find_best_match(track)
+            matcher.find_matches_parallel(tracks, max_workers=workers, on_complete=on_complete)
+    else:
+        # Sequential mode
+        with Progress(
+            SpinnerColumn(style="yellow"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=40, style="yellow", complete_style="bold yellow"),
+            TaskProgressColumn(),
+            TextColumn("[dim]•[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Initializing...", total=len(tracks))
 
-            if result:
-                matches.append(result)
-                if verbose:
-                    console.print(
-                        f"    [green]✓[/green] [dim]#{i}[/dim] "
-                        f"[cyan]{track.artist}[/cyan] - {track.name}\n"
-                        f"      [dim]└─►[/dim] [yellow]{result.youtube_result.title[:50]}[/yellow]\n"
-                        f"          [dim]Quality:[/dim] [bold green]{result.audio_bitrate:.0f}kbps[/bold green] "
-                        f"[dim]│[/dim] [dim]Match:[/dim] [bold]{result.title_similarity:.0%}[/bold] "
-                        f"[dim]│[/dim] [dim]URL:[/dim] [blue]{result.youtube_result.url}[/blue]"
-                    )
-            else:
-                failed.append(track)
-                if verbose:
-                    console.print(
-                        f"    [red]✗[/red] [dim]#{i}[/dim] "
-                        f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
-                    )
+            for i, track in enumerate(tracks, 1):
+                progress.update(
+                    task,
+                    description=f"[cyan]{track.artist}[/cyan] - {track.name[:30]}",
+                )
 
-            progress.advance(task)
+                result = matcher.find_best_match(track)
+
+                if result:
+                    matches.append(result)
+                    if verbose:
+                        console.print(
+                            f"    [green]✓[/green] [dim]#{i}[/dim] "
+                            f"[cyan]{track.artist}[/cyan] - {track.name}\n"
+                            f"      [dim]└─►[/dim] [yellow]{result.youtube_result.title[:50]}[/yellow]\n"
+                            f"          [dim]Quality:[/dim] [bold green]{result.audio_bitrate:.0f}kbps[/bold green] "
+                            f"[dim]│[/dim] [dim]Match:[/dim] [bold]{result.title_similarity:.0%}[/bold] "
+                            f"[dim]│[/dim] [dim]URL:[/dim] [blue]{result.youtube_result.url}[/blue]"
+                        )
+                else:
+                    failed.append(track)
+                    if verbose:
+                        console.print(
+                            f"    [red]✗[/red] [dim]#{i}[/dim] "
+                            f"[cyan]{track.artist}[/cyan] - {track.name} [red](no match)[/red]"
+                        )
+
+                progress.advance(task)
 
     # Summary
     console.print()

@@ -314,6 +314,162 @@ def clear_cache() -> None:
 
 
 @main.command()
+@click.option("--input", "-i", "input_file", type=click.Path(exists=True), help="Input file with YouTube URLs (.txt or .m3u)")
+@click.option("--output-dir", "-o", default="~/Music/SpotifyDownloads", help="Output directory for downloads")
+@click.option("--format", "-f", "audio_format", default="mp3", help="Audio format (mp3, opus, m4a, wav)")
+@click.option("--limit", "-l", default=20, help="Number of songs to match (if no input file)")
+@click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
+def download(
+    input_file: str | None,
+    output_dir: str,
+    audio_format: str,
+    limit: int,
+    keep_video: bool,
+) -> None:
+    """Download matched songs as audio files."""
+    import subprocess
+
+    show_banner(mini=True)
+    console.print()
+
+    # Expand ~ in path
+    output_path = Path(output_dir).expanduser()
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    urls: list[str] = []
+
+    if input_file:
+        # Read URLs from file
+        console.print(f"[dim]Reading URLs from {input_file}...[/dim]")
+        with open(input_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and line.startswith("http"):
+                    urls.append(line)
+                elif line and not line.startswith("#"):
+                    # M3U format - URL might be on its own line
+                    if "youtube.com" in line or "youtu.be" in line:
+                        urls.append(line)
+        console.print(f"[green]✓[/green] Found [bold]{len(urls)}[/bold] URLs\n")
+    else:
+        # Run the match process first
+        console.print(
+            Panel(
+                "[bold cyan]No input file provided[/bold cyan]\n"
+                f"Will match [bold]{limit}[/bold] songs from Spotify first...",
+                border_style="cyan",
+            )
+        )
+        console.print()
+
+        try:
+            client_id, client_secret = get_spotify_credentials()
+        except click.ClickException as e:
+            console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
+            sys.exit(1)
+
+        # Setup and run matcher
+        cache = MatchCache()
+        authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
+        sp = authenticator.get_client()
+        spotify_client = SpotifyClient(sp)
+        youtube_searcher = YouTubeSearcher(quiet=True)
+        matcher = TrackMatcher(youtube_searcher, cache=cache, skip_detailed_info=True)
+
+        tracks: list[Track] = []
+        with console.status("[bold green]🎵 Loading liked songs...[/bold green]", spinner="dots"):
+            for track in spotify_client.get_liked_songs(max_tracks=limit):
+                tracks.append(track)
+
+        console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks\n")
+
+        with Progress(
+            SpinnerColumn(style="yellow"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("⚡ Matching songs...", total=len(tracks))
+
+            def on_complete(track: Track, result: MatchResult | None) -> None:
+                progress.advance(task)
+                if result:
+                    urls.append(result.youtube_result.url)
+
+            matcher.find_matches_parallel(tracks, max_workers=8, on_complete=on_complete)
+
+        console.print(f"\n[green]✓[/green] Matched [bold]{len(urls)}[/bold] songs\n")
+
+    if not urls:
+        console.print("[red]No URLs to download![/red]")
+        return
+
+    # Build yt-dlp command
+    console.print(
+        Panel(
+            f"[bold yellow]📥 Downloading {len(urls)} songs[/bold yellow]\n\n"
+            f"[dim]Format:[/dim] {audio_format}\n"
+            f"[dim]Output:[/dim] {output_path}",
+            border_style="yellow",
+        )
+    )
+    console.print()
+
+    # Filename template - clean format
+    output_template = str(output_path / "%(title)s.%(ext)s")
+
+    cmd = ["yt-dlp", "--no-warnings", "-o", output_template]
+
+    if not keep_video:
+        cmd.extend(["-x", "--audio-format", audio_format])
+
+    # Add progress output
+    cmd.append("--progress")
+
+    # Add all URLs
+    cmd.extend(urls)
+
+    # Run yt-dlp
+    try:
+        console.print("[dim]Starting downloads...[/dim]\n")
+        result = subprocess.run(cmd, check=False)
+
+        console.print()
+        if result.returncode == 0:
+            console.print(
+                Panel(
+                    f"[green]✓[/green] Downloaded [bold]{len(urls)}[/bold] songs to:\n"
+                    f"  [cyan]{output_path}[/cyan]",
+                    title="[bold]✅ COMPLETE[/bold]",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[yellow]⚠[/yellow] Download completed with some errors.\n"
+                    f"Check [cyan]{output_path}[/cyan] for downloaded files.\n\n"
+                    f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
+                    f"  [bold]sudo apt install ffmpeg[/bold]",
+                    title="[bold]⚠️ PARTIAL[/bold]",
+                    border_style="yellow",
+                )
+            )
+    except FileNotFoundError:
+        console.print(
+            Panel(
+                "[red]✗[/red] yt-dlp not found!\n\n"
+                "[dim]Install with:[/dim]\n"
+                "  [bold]pip install yt-dlp[/bold]",
+                title="Error",
+                border_style="red",
+            )
+        )
+        sys.exit(1)
+
+
+@main.command()
 @click.option("--limit", "-l", default=50, help="Maximum number of tracks to fetch")
 @click.option("--output", "-o", type=click.Path(), help="Output file path (default: stdout)")
 def fetch(limit: int, output: str | None) -> None:

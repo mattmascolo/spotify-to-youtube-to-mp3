@@ -2,12 +2,14 @@
 
 import os
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from spotifytoyoutube.export import Exporter
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import SpotifyClient, Track
@@ -228,10 +230,14 @@ def match(
             console.print(m.youtube_result.url)
 
     if output:
-        with open(output, "w") as f:
-            for m in matches:
-                f.write(f"{m.youtube_result.url}\n")
-        console.print(f"\n[green]Saved {len(matches)} URLs to {output}[/green]")
+        output_path = Path(output)
+        exporter = Exporter()
+        try:
+            exporter.export(matches, output_path)
+            console.print(f"\n[green]Saved {len(matches)} matches to {output}[/green]")
+        except ValueError as e:
+            console.print(f"[red]Export error:[/red] {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -11,23 +11,49 @@ build/
 # Virtual environments
 .venv/
 venv/
+env/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.nox/
 
-# Project specific
+# Linting
+.ruff_cache/
+.mypy_cache/
+
+# Project specific - auth tokens and cache
 .spotify_cache
 .spotifytoyoutube_cache/
-*.json
-!tests/fixtures/*.json
 
-# Environment
+# User data files - don't commit personal playlists
+spotify_matches.*
+playlist.*
+*.m3u
+*.m3u8
+
+# Environment variables
 .env
-.env.local
+.env.*
+
+# AI assistant files - not needed in repo
+.claude/
+docs/plans/
+thoughts/
+CONTEXT.md
+IMPLEMENTATION_PLAN.md
+**/handoffs/
+**/*-handoff*.md
+
+# OS files
+.DS_Store
+Thumbs.db

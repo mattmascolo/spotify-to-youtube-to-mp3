@@ -2,6 +2,8 @@
 
 A CLI tool that fetches your Spotify liked songs and finds the highest quality YouTube matches for downloading.
 
+![Screenshot](assets/screenshot.png)
+
 ## Features
 
 - Fetch your Spotify liked songs via OAuth

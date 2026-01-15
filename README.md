@@ -1,4 +1,4 @@
-# Spotify to YT to MP#
+# Spotify to YouTube to MP3
 
 A CLI tool that fetches your Spotify liked songs and finds the highest quality YouTube matches for downloading.
 

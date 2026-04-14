@@ -20,12 +20,14 @@ class Track:
     # Extended metadata (populated from API response)
     all_artists: list[str] | None = None
     artist_id: str | None = None
+    album_artist: str | None = None
     genres: list[str] | None = None
     release_date: str | None = None
     release_year: int | None = None
     popularity: int | None = None
     explicit: bool | None = None
     track_number: int | None = None
+    disc_number: int | None = None
     album_art_url: str | None = None
     isrc: str | None = None
 
@@ -63,6 +65,9 @@ class Track:
         images = album.get("images", [])
         album_art_url = images[0]["url"] if images else None
 
+        album_artists = album.get("artists") or []
+        album_artist = album_artists[0]["name"] if album_artists else None
+
         release_date = album.get("release_date")
         release_year = None
         if release_date:
@@ -82,11 +87,13 @@ class Track:
             duration_seconds=data.get("duration_ms", 0) // 1000,
             all_artists=all_artists,
             artist_id=artist_id,
+            album_artist=album_artist,
             release_date=release_date,
             release_year=release_year,
             popularity=data.get("popularity"),
             explicit=data.get("explicit"),
             track_number=data.get("track_number"),
+            disc_number=data.get("disc_number"),
             album_art_url=album_art_url,
             isrc=isrc,
         )

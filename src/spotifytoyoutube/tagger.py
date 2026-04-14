@@ -6,7 +6,7 @@ import struct
 from pathlib import Path
 from urllib.request import urlopen
 
-from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
+from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 
@@ -42,9 +42,11 @@ def _tag_mp3(filepath: Path, match: MatchResult, album_art: bytes | None) -> Non
 
     tags.delall("TIT2")
     tags.delall("TPE1")
+    tags.delall("TPE2")
     tags.delall("TALB")
     tags.delall("TDRC")
     tags.delall("TRCK")
+    tags.delall("TPOS")
     tags.delall("TCON")
     tags.delall("APIC")
 
@@ -52,10 +54,15 @@ def _tag_mp3(filepath: Path, match: MatchResult, album_art: bytes | None) -> Non
     tags.add(TPE1(encoding=3, text=track.artist))
     tags.add(TALB(encoding=3, text=track.album))
 
+    album_artist = track.album_artist or track.artist
+    tags.add(TPE2(encoding=3, text=album_artist))
+
     if track.release_year:
         tags.add(TDRC(encoding=3, text=str(track.release_year)))
     if track.track_number is not None:
         tags.add(TRCK(encoding=3, text=str(track.track_number)))
+    if track.disc_number is not None:
+        tags.add(TPOS(encoding=3, text=str(track.disc_number)))
     if track.genres:
         tags.add(TCON(encoding=3, text=track.genres[0]))
 
@@ -81,11 +88,14 @@ def _tag_m4a(filepath: Path, match: MatchResult, album_art: bytes | None) -> Non
     audio.tags["\xa9nam"] = [track.name]
     audio.tags["\xa9ART"] = [track.artist]
     audio.tags["\xa9alb"] = [track.album]
+    audio.tags["aART"] = [track.album_artist or track.artist]
 
     if track.release_year:
         audio.tags["\xa9day"] = [str(track.release_year)]
     if track.track_number is not None:
         audio.tags["trkn"] = [(track.track_number, 0)]
+    if track.disc_number is not None:
+        audio.tags["disk"] = [(track.disc_number, 0)]
     if track.genres:
         audio.tags["\xa9gen"] = [track.genres[0]]
 
@@ -117,11 +127,14 @@ def _tag_opus(filepath: Path, match: MatchResult, album_art: bytes | None) -> No
     audio["title"] = [track.name]
     audio["artist"] = [track.artist]
     audio["album"] = [track.album]
+    audio["albumartist"] = [track.album_artist or track.artist]
 
     if track.release_year:
         audio["date"] = [str(track.release_year)]
     if track.track_number is not None:
         audio["tracknumber"] = [str(track.track_number)]
+    if track.disc_number is not None:
+        audio["discnumber"] = [str(track.disc_number)]
     if track.genres:
         audio["genre"] = [track.genres[0]]
 
@@ -141,19 +154,24 @@ def _tag_wav(filepath: Path, match: MatchResult, album_art: bytes | None) -> Non
 
     tags.delall("TIT2")
     tags.delall("TPE1")
+    tags.delall("TPE2")
     tags.delall("TALB")
     tags.delall("TDRC")
     tags.delall("TRCK")
+    tags.delall("TPOS")
     tags.delall("TCON")
 
     tags.add(TIT2(encoding=3, text=track.name))
     tags.add(TPE1(encoding=3, text=track.artist))
     tags.add(TALB(encoding=3, text=track.album))
+    tags.add(TPE2(encoding=3, text=track.album_artist or track.artist))
 
     if track.release_year:
         tags.add(TDRC(encoding=3, text=str(track.release_year)))
     if track.track_number is not None:
         tags.add(TRCK(encoding=3, text=str(track.track_number)))
+    if track.disc_number is not None:
+        tags.add(TPOS(encoding=3, text=str(track.disc_number)))
     if track.genres:
         tags.add(TCON(encoding=3, text=track.genres[0]))
 

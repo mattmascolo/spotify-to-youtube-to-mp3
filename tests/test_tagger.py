@@ -61,9 +61,11 @@ class TestTagFile:
         tags = ID3(mp3_path)
         assert str(tags["TIT2"]) == "Test Song"
         assert str(tags["TPE1"]) == "Test Artist"
+        assert str(tags["TPE2"]) == "Test Album Artist"
         assert str(tags["TALB"]) == "Test Album"
         assert str(tags["TDRC"]) == "2023"
         assert str(tags["TRCK"]) == "3"
+        assert str(tags["TPOS"]) == "2"
         assert str(tags["TCON"]) == "indie pop"
 
     def test_handles_missing_album_art_url(
@@ -89,6 +91,8 @@ class TestTagFile:
         """tag_file works when optional track fields are None."""
         sample_match_result.track.release_year = None
         sample_match_result.track.track_number = None
+        sample_match_result.track.disc_number = None
+        sample_match_result.track.album_artist = None
         sample_match_result.track.genres = None
         sample_match_result.track.album_art_url = None
 
@@ -100,8 +104,11 @@ class TestTagFile:
 
         tags = ID3(mp3_path)
         assert str(tags["TIT2"]) == "Test Song"
+        # Album artist falls back to track artist when missing
+        assert str(tags["TPE2"]) == "Test Artist"
         assert "TDRC" not in tags
         assert "TRCK" not in tags
+        assert "TPOS" not in tags
         assert "TCON" not in tags
 
     def test_mp3_with_album_art(self, tmp_path: Path, sample_match_result: MatchResult) -> None:

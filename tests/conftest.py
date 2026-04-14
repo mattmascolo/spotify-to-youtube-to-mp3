@@ -20,6 +20,7 @@ def sample_spotify_track() -> dict:
             ],
             "album": {
                 "name": "Test Album",
+                "artists": [{"name": "Test Album Artist", "id": "artist1"}],
                 "images": [{"url": "https://i.scdn.co/image/abc123", "width": 640}],
                 "release_date": "2023-06-15",
             },
@@ -27,6 +28,7 @@ def sample_spotify_track() -> dict:
             "popularity": 75,
             "explicit": False,
             "track_number": 3,
+            "disc_number": 2,
         }
     }
 
@@ -55,12 +57,14 @@ def sample_match_result() -> MatchResult:
         duration_seconds=180,
         all_artists=["Test Artist", "Featured Artist"],
         artist_id="artist1",
+        album_artist="Test Album Artist",
         genres=["indie pop", "alternative"],
         release_date="2023-06-15",
         release_year=2023,
         popularity=75,
         explicit=False,
         track_number=3,
+        disc_number=2,
         album_art_url="https://i.scdn.co/image/abc123",
     )
     yt_result = YouTubeResult(

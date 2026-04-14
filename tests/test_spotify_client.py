@@ -21,11 +21,13 @@ class TestTrack:
         # Extended metadata
         assert track.all_artists == ["Test Artist", "Featured Artist"]
         assert track.artist_id == "artist1"
+        assert track.album_artist == "Test Album Artist"
         assert track.release_date == "2023-06-15"
         assert track.release_year == 2023
         assert track.popularity == 75
         assert track.explicit is False
         assert track.track_number == 3
+        assert track.disc_number == 2
         assert track.album_art_url == "https://i.scdn.co/image/abc123"
 
         # Audio features not yet enriched

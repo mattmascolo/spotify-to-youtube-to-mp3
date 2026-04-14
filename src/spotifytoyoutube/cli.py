@@ -22,6 +22,7 @@ from rich.table import Table
 from spotifytoyoutube.cache import MatchCache
 from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
+from spotifytoyoutube.organizer import build_path
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
 from spotifytoyoutube.spotify_url import SpotifyResource, parse_spotify_url
@@ -235,20 +236,33 @@ def _execute_download(
     audio_format: str,
     no_tags: bool,
     keep_video: bool,
+    organize: bool = True,
 ) -> None:
-    """Run yt-dlp to download and optionally tag files."""
+    """Run yt-dlp to download and optionally tag/organize files."""
     import subprocess
+    from shutil import move
 
     output_template = str(output_path / "%(title)s.%(ext)s")
 
-    if match_results and not no_tags:
+    if organize and not match_results and urls:
+        console.print(
+            "[yellow]Note: --organize requires Spotify metadata; "
+            "flat layout used for URL-only input.[/yellow]\n"
+        )
+
+    needs_per_file_loop = bool(match_results) and (not no_tags or organize)
+
+    if needs_per_file_loop:
+        tags_label = "Enabled" if not no_tags else "Skipped"
+        organize_label = "Artist/Album folders" if organize else "Flat layout"
         console.print(
             Panel(
-                f"[bold yellow]📥 Downloading & tagging {len(match_results)} songs"
+                f"[bold yellow]📥 Downloading {len(match_results)} songs"
                 f"[/bold yellow]\n\n"
-                f"[dim]Format:[/dim] {audio_format}\n"
-                f"[dim]Output:[/dim] {output_path}\n"
-                f"[dim]Tags:[/dim]  Enabled",
+                f"[dim]Format:[/dim]   {audio_format}\n"
+                f"[dim]Output:[/dim]   {output_path}\n"
+                f"[dim]Layout:[/dim]   {organize_label}\n"
+                f"[dim]Tags:[/dim]     {tags_label}",
                 border_style="yellow",
             )
         )
@@ -305,10 +319,21 @@ def _execute_download(
                     download_ok += 1
                     filepath = Path(filepath_str)
 
-                    if tag_file(filepath, mr, audio_format):
-                        tag_ok += 1
-                    else:
-                        tag_fail += 1
+                    if organize:
+                        destination = build_path(mr.track, output_path, audio_format)
+                        try:
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            if destination != filepath:
+                                move(str(filepath), str(destination))
+                            filepath = destination
+                        except OSError:
+                            pass
+
+                    if not no_tags:
+                        if tag_file(filepath, mr, audio_format):
+                            tag_ok += 1
+                        else:
+                            tag_fail += 1
 
                 except FileNotFoundError:
                     console.print(
@@ -325,9 +350,12 @@ def _execute_download(
                 progress.advance(dl_task)
 
         console.print()
-        tag_info = f"\n[dim]Tagged:[/dim] {tag_ok}/{download_ok}"
-        if tag_fail:
-            tag_info += f" [yellow]({tag_fail} tag failures)[/yellow]"
+        if no_tags:
+            tag_info = ""
+        else:
+            tag_info = f"\n[dim]Tagged:[/dim] {tag_ok}/{download_ok}"
+            if tag_fail:
+                tag_info += f" [yellow]({tag_fail} tag failures)[/yellow]"
 
         if download_fail == 0:
             console.print(
@@ -661,6 +689,10 @@ def clear_cache() -> None:
 @click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
 @click.option("--no-tags", is_flag=True, help="Skip embedding metadata tags in downloaded files")
 @click.option(
+    "--organize/--no-organize", default=True,
+    help="Organize downloads into Artist/Album folders (default: enabled)",
+)
+@click.option(
     "--playlist", "-p", "playlist_ids", multiple=True,
     help="Match tracks from a playlist ID instead of liked songs (repeatable)",
 )
@@ -672,6 +704,7 @@ def download(
     limit: int | None,
     keep_video: bool,
     no_tags: bool,
+    organize: bool,
     playlist_ids: tuple[str, ...],
     interactive: bool | None,
 ) -> None:
@@ -690,6 +723,7 @@ def download(
         and limit is None
         and not keep_video
         and not no_tags
+        and organize
         and not playlist_ids
     )
 
@@ -897,6 +931,7 @@ def download(
         audio_format=audio_format,
         no_tags=no_tags,
         keep_video=keep_video,
+        organize=organize,
     )
 
 
@@ -915,6 +950,10 @@ def download(
     help="Cap the number of tracks fetched (default: all)",
 )
 @click.option("--no-tags", is_flag=True, help="Skip embedding metadata tags")
+@click.option(
+    "--organize/--no-organize", default=True,
+    help="Organize downloads into Artist/Album folders (default: enabled)",
+)
 @click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
 def grab(
     url: str,
@@ -922,6 +961,7 @@ def grab(
     audio_format: str,
     limit: int | None,
     no_tags: bool,
+    organize: bool,
     keep_video: bool,
 ) -> None:
     """Grab any Spotify URL (track, album, playlist, artist, or 'liked')."""
@@ -979,6 +1019,7 @@ def grab(
         audio_format=audio_format,
         no_tags=no_tags,
         keep_video=keep_video,
+        organize=organize,
     )
 
 

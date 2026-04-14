@@ -1,15 +1,14 @@
 """Tests for export functionality."""
 
 import json
+from pathlib import Path
 
 import pytest
-from pathlib import Path
-from unittest.mock import Mock
 
 from spotifytoyoutube.export import (
     Exporter,
-    export_to_json,
     export_to_csv,
+    export_to_json,
     export_to_m3u,
 )
 from spotifytoyoutube.matcher import MatchResult

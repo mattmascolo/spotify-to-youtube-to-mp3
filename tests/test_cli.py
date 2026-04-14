@@ -1,10 +1,10 @@
 """Tests for CLI commands."""
 
-import pytest
 from unittest.mock import Mock, patch
+
 from click.testing import CliRunner
 
-from spotifytoyoutube.cli import main, auth, fetch, match
+from spotifytoyoutube.cli import auth, fetch, match
 
 
 class TestAuthCommand:

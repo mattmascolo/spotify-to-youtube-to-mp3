@@ -20,10 +20,11 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
 from spotifytoyoutube.cache import MatchCache
-from spotifytoyoutube.export import Exporter
+from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import SpotifyClient, Track
+from spotifytoyoutube.tagger import tag_file
 from spotifytoyoutube.youtube_search import YouTubeSearcher
 
 console = Console()
@@ -319,6 +320,7 @@ def clear_cache() -> None:
 @click.option("--format", "-f", "audio_format", default=None, help="Audio format (mp3, opus, m4a, wav)")
 @click.option("--limit", "-l", default=None, type=int, help="Number of songs to match (if no input file)")
 @click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
+@click.option("--no-tags", is_flag=True, help="Skip embedding metadata tags in downloaded files")
 @click.option("--interactive/--no-interactive", default=None, help="Force interactive/non-interactive mode")
 def download(
     input_file: str | None,
@@ -326,6 +328,7 @@ def download(
     audio_format: str | None,
     limit: int | None,
     keep_video: bool,
+    no_tags: bool,
     interactive: bool | None,
 ) -> None:
     """Download matched songs as audio files."""
@@ -343,6 +346,7 @@ def download(
         and audio_format is None
         and limit is None
         and not keep_video
+        and not no_tags
     )
 
     if run_interactive:
@@ -414,6 +418,14 @@ def download(
         audio_format = format_map.get(format_choice, format_choice)
         console.print()
 
+        # Question: Metadata tagging (only when using Spotify source)
+        if not input_file:
+            console.print("[bold]🏷️  Embed metadata tags?[/bold]")
+            console.print("[dim]  Writes artist, album, genre, and cover art into each file[/dim]")
+            embed_tags = Confirm.ask("  Embed tags?", default=True, console=console)
+            no_tags = not embed_tags
+            console.print()
+
         # Summary
         summary_table = Table.grid(padding=(0, 2))
         summary_table.add_column(style="cyan")
@@ -425,6 +437,8 @@ def download(
             summary_table.add_row("Source:", f"Spotify ({limit} songs)")
         summary_table.add_row("Output:", output_dir)
         summary_table.add_row("Format:", audio_format)
+        if not input_file:
+            summary_table.add_row("Tags:", "Yes" if not no_tags else "No")
 
         console.print(Panel(summary_table, title="[bold]📋 Download Settings[/bold]", border_style="green"))
         console.print()
@@ -450,20 +464,30 @@ def download(
     output_path.mkdir(parents=True, exist_ok=True)
 
     urls: list[str] = []
+    match_results: list[MatchResult] = []
 
     if input_file:
-        # Read URLs from file
-        console.print(f"[dim]Reading URLs from {input_file}...[/dim]")
-        with open(input_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and line.startswith("http"):
-                    urls.append(line)
-                elif line and not line.startswith("#"):
-                    # M3U format - URL might be on its own line
-                    if "youtube.com" in line or "youtu.be" in line:
+        input_path = Path(input_file)
+        if input_path.suffix.lower() == ".json":
+            # Load full match data from JSON (preserves metadata for tagging)
+            console.print(f"[dim]Loading matches from {input_file}...[/dim]")
+            match_results = load_matches_from_json(input_path)
+            console.print(
+                f"[green]✓[/green] Loaded [bold]{len(match_results)}[/bold] "
+                f"matches with metadata\n"
+            )
+        else:
+            # Read bare URLs from txt/m3u
+            console.print(f"[dim]Reading URLs from {input_file}...[/dim]")
+            with open(input_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and line.startswith("http"):
                         urls.append(line)
-        console.print(f"[green]✓[/green] Found [bold]{len(urls)}[/bold] URLs\n")
+                    elif line and not line.startswith("#"):
+                        if "youtube.com" in line or "youtu.be" in line:
+                            urls.append(line)
+            console.print(f"[green]✓[/green] Found [bold]{len(urls)}[/bold] URLs\n")
     else:
         # Run the match process first
         console.print(
@@ -494,7 +518,12 @@ def download(
             for track in spotify_client.get_liked_songs(max_tracks=limit):
                 tracks.append(track)
 
-        console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks\n")
+        console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks")
+
+        with console.status("[bold green]🎵 Enriching tracks with metadata...[/bold green]", spinner="dots"):
+            spotify_client.enrich_tracks(tracks)
+
+        console.print("[green]✓[/green] Enriched tracks with audio features & genres\n")
 
         with Progress(
             SpinnerColumn(style="yellow"),
@@ -508,78 +537,181 @@ def download(
             def on_complete(track: Track, result: MatchResult | None) -> None:
                 progress.advance(task)
                 if result:
-                    urls.append(result.youtube_result.url)
+                    match_results.append(result)
 
             matcher.find_matches_parallel(tracks, max_workers=8, on_complete=on_complete)
 
-        console.print(f"\n[green]✓[/green] Matched [bold]{len(urls)}[/bold] songs\n")
+        console.print(f"\n[green]✓[/green] Matched [bold]{len(match_results)}[/bold] songs\n")
 
-    if not urls:
+    total_items = len(match_results) or len(urls)
+    if total_items == 0:
         console.print("[red]No URLs to download![/red]")
         return
-
-    # Build yt-dlp command
-    console.print(
-        Panel(
-            f"[bold yellow]📥 Downloading {len(urls)} songs[/bold yellow]\n\n"
-            f"[dim]Format:[/dim] {audio_format}\n"
-            f"[dim]Output:[/dim] {output_path}",
-            border_style="yellow",
-        )
-    )
-    console.print()
 
     # Filename template - clean format
     output_template = str(output_path / "%(title)s.%(ext)s")
 
-    cmd = ["yt-dlp", "--no-warnings", "-o", output_template]
+    if match_results and not no_tags:
+        # Per-file download + tag loop (we have Spotify metadata)
+        console.print(
+            Panel(
+                f"[bold yellow]📥 Downloading & tagging {len(match_results)} songs[/bold yellow]\n\n"
+                f"[dim]Format:[/dim] {audio_format}\n"
+                f"[dim]Output:[/dim] {output_path}\n"
+                f"[dim]Tags:[/dim]  Enabled",
+                border_style="yellow",
+            )
+        )
+        console.print()
 
-    if not keep_video:
-        cmd.extend(["-x", "--audio-format", audio_format])
+        download_ok = 0
+        download_fail = 0
+        tag_ok = 0
+        tag_fail = 0
 
-    # Add progress output
-    cmd.append("--progress")
+        with Progress(
+            SpinnerColumn(style="yellow"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            dl_task = progress.add_task("📥 Downloading...", total=len(match_results))
 
-    # Add all URLs
-    cmd.extend(urls)
+            for mr in match_results:
+                progress.update(
+                    dl_task,
+                    description=f"📥 [cyan]{mr.track.artist}[/cyan] - {mr.track.name[:30]}",
+                )
+                url = mr.youtube_result.url
+                cmd = [
+                    "yt-dlp", "--no-warnings", "-o", output_template,
+                    "--print", "after_move:filepath",
+                    "--quiet",
+                ]
+                if not keep_video:
+                    cmd.extend(["-x", "--audio-format", audio_format])
+                cmd.append(url)
 
-    # Run yt-dlp
-    try:
-        console.print("[dim]Starting downloads...[/dim]\n")
-        result = subprocess.run(cmd, check=False)
+                try:
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, check=False,
+                    )
+                    if result.returncode != 0:
+                        download_fail += 1
+                        progress.advance(dl_task)
+                        continue
+
+                    filepath_str = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+                    if not filepath_str or not Path(filepath_str).exists():
+                        download_fail += 1
+                        progress.advance(dl_task)
+                        continue
+
+                    download_ok += 1
+                    filepath = Path(filepath_str)
+
+                    if tag_file(filepath, mr, audio_format):
+                        tag_ok += 1
+                    else:
+                        tag_fail += 1
+
+                except FileNotFoundError:
+                    console.print(
+                        Panel(
+                            "[red]✗[/red] yt-dlp not found!\n\n"
+                            "[dim]Install with:[/dim]\n"
+                            "  [bold]pip install yt-dlp[/bold]",
+                            title="Error",
+                            border_style="red",
+                        )
+                    )
+                    sys.exit(1)
+
+                progress.advance(dl_task)
 
         console.print()
-        if result.returncode == 0:
+        tag_info = f"\n[dim]Tagged:[/dim] {tag_ok}/{download_ok}"
+        if tag_fail:
+            tag_info += f" [yellow]({tag_fail} tag failures)[/yellow]"
+
+        if download_fail == 0:
             console.print(
                 Panel(
-                    f"[green]✓[/green] Downloaded [bold]{len(urls)}[/bold] songs to:\n"
-                    f"  [cyan]{output_path}[/cyan]",
-                    title="[bold]✅ COMPLETE[/bold]",
+                    f"[green]✓[/green] Downloaded [bold]{download_ok}[/bold] songs to:\n"
+                    f"  [cyan]{output_path}[/cyan]{tag_info}",
+                    title="[bold]COMPLETE[/bold]",
                     border_style="green",
                 )
             )
         else:
             console.print(
                 Panel(
-                    f"[yellow]⚠[/yellow] Download completed with some errors.\n"
-                    f"Check [cyan]{output_path}[/cyan] for downloaded files.\n\n"
+                    f"[yellow]⚠[/yellow] Downloaded {download_ok}/{len(match_results)} songs.\n"
+                    f"Check [cyan]{output_path}[/cyan] for downloaded files.{tag_info}\n\n"
                     f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
                     f"  [bold]sudo apt install ffmpeg[/bold]",
-                    title="[bold]⚠️ PARTIAL[/bold]",
+                    title="[bold]PARTIAL[/bold]",
                     border_style="yellow",
                 )
             )
-    except FileNotFoundError:
+    else:
+        # Batch download (input file or --no-tags)
+        all_urls = [mr.youtube_result.url for mr in match_results] if match_results else urls
         console.print(
             Panel(
-                "[red]✗[/red] yt-dlp not found!\n\n"
-                "[dim]Install with:[/dim]\n"
-                "  [bold]pip install yt-dlp[/bold]",
-                title="Error",
-                border_style="red",
+                f"[bold yellow]📥 Downloading {len(all_urls)} songs[/bold yellow]\n\n"
+                f"[dim]Format:[/dim] {audio_format}\n"
+                f"[dim]Output:[/dim] {output_path}",
+                border_style="yellow",
             )
         )
-        sys.exit(1)
+        console.print()
+
+        cmd = ["yt-dlp", "--no-warnings", "-o", output_template]
+
+        if not keep_video:
+            cmd.extend(["-x", "--audio-format", audio_format])
+
+        cmd.append("--progress")
+        cmd.extend(all_urls)
+
+        try:
+            console.print("[dim]Starting downloads...[/dim]\n")
+            result = subprocess.run(cmd, check=False)
+
+            console.print()
+            if result.returncode == 0:
+                console.print(
+                    Panel(
+                        f"[green]✓[/green] Downloaded [bold]{len(all_urls)}[/bold] songs to:\n"
+                        f"  [cyan]{output_path}[/cyan]",
+                        title="[bold]COMPLETE[/bold]",
+                        border_style="green",
+                    )
+                )
+            else:
+                console.print(
+                    Panel(
+                        f"[yellow]⚠[/yellow] Download completed with some errors.\n"
+                        f"Check [cyan]{output_path}[/cyan] for downloaded files.\n\n"
+                        f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
+                        f"  [bold]sudo apt install ffmpeg[/bold]",
+                        title="[bold]PARTIAL[/bold]",
+                        border_style="yellow",
+                    )
+                )
+        except FileNotFoundError:
+            console.print(
+                Panel(
+                    "[red]✗[/red] yt-dlp not found!\n\n"
+                    "[dim]Install with:[/dim]\n"
+                    "  [bold]pip install yt-dlp[/bold]",
+                    title="Error",
+                    border_style="red",
+                )
+            )
+            sys.exit(1)
 
 
 @main.command()
@@ -699,7 +831,12 @@ def run_match(
         for track in spotify_client.get_liked_songs(max_tracks=limit):
             tracks.append(track)
 
-    console.print(f"    [green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks from Spotify\n")
+    console.print(f"    [green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks from Spotify")
+
+    with console.status("[bold green]🎵 Enriching tracks with metadata...[/bold green]", spinner="dots"):
+        spotify_client.enrich_tracks(tracks)
+
+    console.print("    [green]✓[/green] Enriched tracks with audio features & genres\n")
 
     # Match tracks
     parallel_info = f" [dim]({workers} parallel workers)[/dim]" if fast else ""

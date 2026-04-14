@@ -1,8 +1,6 @@
 """Tests for caching functionality."""
 
 import time
-
-import pytest
 from pathlib import Path
 
 from spotifytoyoutube.cache import MatchCache, RateLimiter

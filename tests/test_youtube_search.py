@@ -1,9 +1,8 @@
 """Tests for YouTube search functionality."""
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
-from spotifytoyoutube.youtube_search import YouTubeSearcher, YouTubeResult
+from spotifytoyoutube.youtube_search import YouTubeResult, YouTubeSearcher
 
 
 class TestYouTubeResult:

@@ -1,9 +1,8 @@
 """Tests for track matching algorithm."""
 
-import pytest
 from unittest.mock import Mock
 
-from spotifytoyoutube.matcher import TrackMatcher, MatchResult, MatchScore
+from spotifytoyoutube.matcher import MatchResult, MatchScore, TrackMatcher
 from spotifytoyoutube.spotify_client import Track
 from spotifytoyoutube.youtube_search import YouTubeResult
 

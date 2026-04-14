@@ -1,6 +1,5 @@
 """Tests for Spotify client functionality."""
 
-import pytest
 from unittest.mock import Mock
 
 from spotifytoyoutube.spotify_client import SpotifyClient, Track
@@ -18,6 +17,20 @@ class TestTrack:
         assert track.artist == "Test Artist"
         assert track.album == "Test Album"
         assert track.duration_seconds == 180
+
+        # Extended metadata
+        assert track.all_artists == ["Test Artist", "Featured Artist"]
+        assert track.artist_id == "artist1"
+        assert track.release_date == "2023-06-15"
+        assert track.release_year == 2023
+        assert track.popularity == 75
+        assert track.explicit is False
+        assert track.track_number == 3
+        assert track.album_art_url == "https://i.scdn.co/image/abc123"
+
+        # Audio features not yet enriched
+        assert track.tempo is None
+        assert track.genres is None
 
     def test_track_search_query(self) -> None:
         """Track generates appropriate YouTube search query."""
@@ -133,3 +146,76 @@ class TestSpotifyClient:
         tracks = list(client.get_liked_songs(limit=50, max_tracks=10))
 
         assert len(tracks) == 10
+
+    def test_enrich_audio_features(self) -> None:
+        """_enrich_audio_features applies features to tracks."""
+        mock_sp = Mock()
+        mock_sp.audio_features.return_value = [
+            {
+                "id": "t1",
+                "tempo": 120.0,
+                "energy": 0.8,
+                "danceability": 0.7,
+                "valence": 0.6,
+                "acousticness": 0.1,
+                "instrumentalness": 0.0,
+                "loudness": -5.0,
+                "speechiness": 0.05,
+                "liveness": 0.1,
+                "key": 5,
+                "time_signature": 4,
+                "mode": 1,
+            },
+        ]
+
+        track = Track(id="t1", name="Song", artist="Artist", album="Album", duration_seconds=180)
+        client = SpotifyClient(mock_sp)
+        client._enrich_audio_features([track])
+
+        assert track.tempo == 120.0
+        assert track.energy == 0.8
+        assert track.danceability == 0.7
+        assert track.key == 5
+        assert track.time_signature == 4
+        mock_sp.audio_features.assert_called_once_with(["t1"])
+
+    def test_enrich_artist_genres(self) -> None:
+        """_enrich_artist_genres applies genres from artist lookup."""
+        mock_sp = Mock()
+        mock_sp.artists.return_value = {
+            "artists": [
+                {"id": "a1", "genres": ["pop", "indie pop"]},
+            ],
+        }
+
+        t1 = Track(
+            id="t1", name="Song 1", artist="Artist", album="Album",
+            duration_seconds=180, artist_id="a1",
+        )
+        t2 = Track(
+            id="t2", name="Song 2", artist="Artist", album="Album",
+            duration_seconds=200, artist_id="a1",
+        )
+        client = SpotifyClient(mock_sp)
+        client._enrich_artist_genres([t1, t2])
+
+        assert t1.genres == ["pop", "indie pop"]
+        assert t2.genres == ["pop", "indie pop"]
+        # Should deduplicate: only one call for the same artist
+        mock_sp.artists.assert_called_once_with(["a1"])
+
+    def test_enrich_tracks_calls_both(self) -> None:
+        """enrich_tracks calls both audio features and artist genres."""
+        mock_sp = Mock()
+        mock_sp.audio_features.return_value = [None]
+        mock_sp.artists.return_value = {"artists": []}
+
+        track = Track(
+            id="t1", name="Song", artist="Artist", album="Album",
+            duration_seconds=180, artist_id="a1",
+        )
+        client = SpotifyClient(mock_sp)
+        client.enrich_tracks([track])
+
+        mock_sp.audio_features.assert_called_once()
+        mock_sp.artists.assert_called_once()

@@ -198,3 +198,104 @@ class TestTrackMatcher:
         match = matcher.find_best_match(track)
 
         assert match is None
+
+
+class TestIsrcVerification:
+    """Tests for ISRC-based match verification."""
+
+    def _make_yt(self, description: str | None = None) -> YouTubeResult:
+        return YouTubeResult(
+            video_id="v1",
+            title="Artist - Song",
+            duration_seconds=180,
+            audio_bitrate=256,
+            audio_codec="opus",
+            description=description,
+        )
+
+    def _make_track(self, isrc: str | None = "USUM71703861") -> Track:
+        return Track(
+            id="sp1",
+            name="Song",
+            artist="Artist",
+            album="Album",
+            duration_seconds=180,
+            isrc=isrc,
+        )
+
+    def test_isrc_verified_when_description_contains_code(self) -> None:
+        mock_searcher = Mock()
+        mock_searcher.search.return_value = [self._make_yt()]
+        mock_searcher.get_video_info.return_value = self._make_yt(
+            description="Provided to YouTube by UMG\nISRC: USUM71703861",
+        )
+
+        matcher = TrackMatcher(mock_searcher)
+        match = matcher.find_best_match(self._make_track())
+
+        assert match is not None
+        assert match.isrc_verified is True
+
+    def test_isrc_case_insensitive_match(self) -> None:
+        mock_searcher = Mock()
+        mock_searcher.search.return_value = [self._make_yt()]
+        mock_searcher.get_video_info.return_value = self._make_yt(
+            description="isrc: usum71703861 somewhere",
+        )
+        matcher = TrackMatcher(mock_searcher)
+        match = matcher.find_best_match(self._make_track())
+        assert match is not None
+        assert match.isrc_verified is True
+
+    def test_isrc_not_verified_when_description_missing(self) -> None:
+        mock_searcher = Mock()
+        mock_searcher.search.return_value = [self._make_yt()]
+        mock_searcher.get_video_info.return_value = self._make_yt(
+            description="Random fan upload",
+        )
+        matcher = TrackMatcher(mock_searcher)
+        match = matcher.find_best_match(self._make_track())
+        assert match is not None
+        assert match.isrc_verified is False
+
+    def test_no_isrc_on_track_skips_verification(self) -> None:
+        mock_searcher = Mock()
+        mock_searcher.search.return_value = [self._make_yt()]
+        mock_searcher.get_video_info.return_value = self._make_yt()
+        matcher = TrackMatcher(mock_searcher)
+        match = matcher.find_best_match(self._make_track(isrc=None))
+        assert match is not None
+        assert match.isrc_verified is False
+
+    def test_isrc_boost_applies_to_combined_score(self) -> None:
+        verified = MatchResult(
+            track=Mock(),
+            youtube_result=Mock(),
+            title_similarity=0.8,
+            duration_match=True,
+            audio_bitrate=256,
+            isrc_verified=True,
+        )
+        unverified = MatchResult(
+            track=Mock(),
+            youtube_result=Mock(),
+            title_similarity=0.8,
+            duration_match=True,
+            audio_bitrate=256,
+            isrc_verified=False,
+        )
+        assert verified.combined_score > unverified.combined_score
+
+    def test_isrc_verification_in_fast_mode_fetches_description(self) -> None:
+        """Even in fast mode, verification fetches description for the top candidate."""
+        mock_searcher = Mock()
+        mock_searcher.search.return_value = [self._make_yt()]
+        mock_searcher.get_video_info.return_value = self._make_yt(
+            description="ISRC: USUM71703861",
+        )
+
+        matcher = TrackMatcher(mock_searcher, skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+        assert match is not None
+        assert match.isrc_verified is True
+        mock_searcher.get_video_info.assert_called()

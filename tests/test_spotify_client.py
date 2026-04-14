@@ -43,6 +43,29 @@ class TestTrack:
         )
         assert track.search_query == "Test Artist - Test Song"
 
+    def test_track_extracts_isrc(self) -> None:
+        data = {
+            "id": "t1",
+            "name": "Song",
+            "artists": [{"name": "Artist", "id": "a1"}],
+            "album": {"name": "Album", "images": [], "release_date": "2023"},
+            "duration_ms": 180000,
+            "external_ids": {"isrc": "USUM71703861"},
+        }
+        track = Track.from_api_response(data)
+        assert track.isrc == "USUM71703861"
+
+    def test_track_isrc_missing_is_none(self) -> None:
+        data = {
+            "id": "t1",
+            "name": "Song",
+            "artists": [{"name": "Artist"}],
+            "album": {"name": "Album"},
+            "duration_ms": 180000,
+        }
+        track = Track.from_api_response(data)
+        assert track.isrc is None
+
 
 class TestSpotifyClient:
     """Tests for SpotifyClient class."""

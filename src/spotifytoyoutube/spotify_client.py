@@ -27,6 +27,7 @@ class Track:
     explicit: bool | None = None
     track_number: int | None = None
     album_art_url: str | None = None
+    isrc: str | None = None
 
     # Audio features (populated via enrich_tracks)
     tempo: float | None = None
@@ -70,6 +71,9 @@ class Track:
             except (ValueError, IndexError):
                 pass
 
+        external_ids = data.get("external_ids") or {}
+        isrc = external_ids.get("isrc")
+
         return cls(
             id=data["id"],
             name=data["name"],
@@ -84,6 +88,7 @@ class Track:
             explicit=data.get("explicit"),
             track_number=data.get("track_number"),
             album_art_url=album_art_url,
+            isrc=isrc,
         )
 
     @property

@@ -15,6 +15,7 @@ class YouTubeResult:
     duration_seconds: int
     audio_bitrate: int
     audio_codec: str
+    description: str | None = None
 
     @classmethod
     def from_yt_dlp_info(cls, info: dict[str, Any]) -> "YouTubeResult":
@@ -50,6 +51,7 @@ class YouTubeResult:
             duration_seconds=info.get("duration", 0) or 0,
             audio_bitrate=int(audio_bitrate),
             audio_codec=audio_codec,
+            description=info.get("description"),
         )
 
     @property

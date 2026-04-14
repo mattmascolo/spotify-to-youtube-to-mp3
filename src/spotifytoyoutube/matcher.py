@@ -58,6 +58,7 @@ class MatchResult:
     title_similarity: float
     duration_match: bool
     audio_bitrate: int
+    isrc_verified: bool = False
 
     @property
     def combined_score(self) -> float:
@@ -68,19 +69,18 @@ class MatchResult:
         - Audio bitrate (normalized to 0-1, max 320kbps): 60%
         - Title similarity: 30%
         - Duration match bonus: 10%
-
-        Returns:
-            Combined score between 0.0 and 1.0
+        - ISRC verification bonus: +20% (when the YouTube video description
+          contains the Spotify ISRC, we know it's the same recording)
         """
-        # Normalize bitrate to 0-1 scale (assuming max 320kbps)
         bitrate_score = min(self.audio_bitrate / 320.0, 1.0)
-
         duration_bonus = 0.1 if self.duration_match else 0.0
+        isrc_bonus = 0.2 if self.isrc_verified else 0.0
 
         return (
             bitrate_score * 0.6
             + self.title_similarity * 0.3
             + duration_bonus
+            + isrc_bonus
         )
 
 
@@ -155,6 +155,7 @@ class TrackMatcher:
                     title_similarity=cached["title_similarity"],
                     duration_match=cached["duration_match"],
                     audio_bitrate=cached["audio_bitrate"],
+                    isrc_verified=cached.get("isrc_verified", False),
                 )
 
         # Rate limit if configured
@@ -234,6 +235,21 @@ class TrackMatcher:
 
         # Get best match
         best = max(candidates, key=lambda m: m.combined_score)
+
+        # ISRC verification (best-effort). Even in fast mode, pay the cost of
+        # one extra get_video_info call for the winning candidate — correct
+        # match identity is more valuable than one network request per track.
+        if track.isrc:
+            description = best.youtube_result.description
+            if description is None:
+                detailed = self.searcher.get_video_info(best.youtube_result.video_id)
+                if detailed and detailed.description is not None:
+                    best.youtube_result.description = detailed.description
+                    description = detailed.description
+            if description and track.isrc.upper() in description.upper():
+                best.isrc_verified = True
+                emit("isrc_verified", isrc=track.isrc)
+
         emit(
             "best_match",
             title=best.youtube_result.title[:50],
@@ -251,6 +267,7 @@ class TrackMatcher:
                 "audio_codec": best.youtube_result.audio_codec,
                 "title_similarity": best.title_similarity,
                 "duration_match": best.duration_match,
+                "isrc_verified": best.isrc_verified,
             })
 
         return best

@@ -38,6 +38,23 @@ class TestYouTubeResult:
         result = YouTubeResult.from_yt_dlp_info(info)
         assert result.audio_bitrate == 0
 
+    def test_from_yt_dlp_info_captures_description(self) -> None:
+        """YouTubeResult exposes the video description when present."""
+        info = {
+            "id": "abc",
+            "title": "Song",
+            "duration": 180,
+            "description": "Provided to YouTube by UMG\n\nISRC: USUM71703861",
+        }
+        result = YouTubeResult.from_yt_dlp_info(info)
+        assert "USUM71703861" in (result.description or "")
+
+    def test_from_yt_dlp_info_description_missing_is_none(self) -> None:
+        """Description is None when not present in info dict."""
+        info = {"id": "abc", "title": "Song", "duration": 180}
+        result = YouTubeResult.from_yt_dlp_info(info)
+        assert result.description is None
+
 
 class TestYouTubeSearcher:
     """Tests for YouTubeSearcher class."""

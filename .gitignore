@@ -34,6 +34,8 @@ htmlcov/
 # Project specific - auth tokens and cache
 .spotify_cache
 .spotifytoyoutube_cache/
+.cache
+.cache-*
 
 # User data files - don't commit personal playlists
 spotify_matches.*

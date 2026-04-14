@@ -8,7 +8,7 @@ import yt_dlp
 
 @dataclass
 class YouTubeResult:
-    """Represents a YouTube search result with audio quality metadata."""
+    """Represents a YouTube-or-SoundCloud search result with audio metadata."""
 
     video_id: str
     title: str
@@ -16,6 +16,7 @@ class YouTubeResult:
     audio_bitrate: int
     audio_codec: str
     description: str | None = None
+    override_url: str | None = None
 
     @classmethod
     def from_yt_dlp_info(cls, info: dict[str, Any]) -> "YouTubeResult":
@@ -56,7 +57,9 @@ class YouTubeResult:
 
     @property
     def url(self) -> str:
-        """Return full YouTube URL."""
+        """Return the full URL, honoring override_url for non-YouTube sources."""
+        if self.override_url:
+            return self.override_url
         return f"https://www.youtube.com/watch?v={self.video_id}"
 
 

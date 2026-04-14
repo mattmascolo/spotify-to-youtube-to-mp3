@@ -299,3 +299,113 @@ class TestIsrcVerification:
         assert match is not None
         assert match.isrc_verified is True
         mock_searcher.get_video_info.assert_called()
+
+
+class TestMultiSourceFallback:
+    """Tests for the multi-searcher fallback behavior."""
+
+    def _make_track(self) -> Track:
+        return Track(
+            id="sp1",
+            name="Song",
+            artist="Artist",
+            album="Album",
+            duration_seconds=180,
+        )
+
+    def _yt(
+        self,
+        vid: str = "v1",
+        title: str = "Artist - Song",
+        override_url: str | None = None,
+    ) -> YouTubeResult:
+        return YouTubeResult(
+            video_id=vid,
+            title=title,
+            duration_seconds=180,
+            audio_bitrate=256,
+            audio_codec="opus",
+            override_url=override_url,
+        )
+
+    def test_youtube_used_when_it_yields_match(self) -> None:
+        yt = Mock()
+        yt.search.return_value = [self._yt()]
+        yt.get_video_info.return_value = None
+        sc = Mock()
+
+        matcher = TrackMatcher(searchers=[yt, sc], skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+
+        assert match is not None
+        assert match.source == "youtube"
+        sc.search.assert_not_called()
+
+    def test_falls_back_to_soundcloud_when_youtube_has_no_match(self) -> None:
+        yt = Mock()
+        yt.search.return_value = []
+        yt.get_video_info.return_value = None
+        sc = Mock()
+        sc.search.return_value = [
+            self._yt(
+                vid="sc1",
+                override_url="https://soundcloud.com/artist/song",
+            ),
+        ]
+        sc.get_video_info.return_value = None
+
+        matcher = TrackMatcher(searchers=[yt, sc], skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+
+        assert match is not None
+        assert match.source == "soundcloud"
+        assert match.youtube_result.url == "https://soundcloud.com/artist/song"
+
+    def test_falls_back_when_youtube_below_similarity(self) -> None:
+        yt = Mock()
+        yt.search.return_value = [
+            self._yt(title="TOTALLY UNRELATED GARBAGE"),
+        ]
+        yt.get_video_info.return_value = None
+        sc = Mock()
+        sc.search.return_value = [
+            self._yt(
+                vid="sc1",
+                override_url="https://soundcloud.com/artist/song",
+            ),
+        ]
+        sc.get_video_info.return_value = None
+
+        matcher = TrackMatcher(searchers=[yt, sc], skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+
+        assert match is not None
+        assert match.source == "soundcloud"
+
+    def test_returns_none_when_all_sources_fail(self) -> None:
+        yt = Mock()
+        yt.search.return_value = []
+        yt.get_video_info.return_value = None
+        sc = Mock()
+        sc.search.return_value = []
+        sc.get_video_info.return_value = None
+
+        matcher = TrackMatcher(searchers=[yt, sc], skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+        assert match is None
+
+    def test_single_searcher_positional_still_works(self) -> None:
+        """Backwards compat: positional searcher= still creates a single-source matcher."""
+        yt = Mock()
+        yt.search.return_value = [self._yt()]
+        yt.get_video_info.return_value = None
+
+        matcher = TrackMatcher(yt, skip_detailed_info=True)
+        match = matcher.find_best_match(self._make_track())
+        assert match is not None
+        assert match.source == "youtube"
+
+    def test_raises_when_no_searcher_provided(self) -> None:
+        import pytest
+        with pytest.raises(ValueError):
+            TrackMatcher()

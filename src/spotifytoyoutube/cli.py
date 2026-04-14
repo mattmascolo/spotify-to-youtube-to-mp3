@@ -23,6 +23,7 @@ from spotifytoyoutube.cache import MatchCache
 from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.organizer import build_path
+from spotifytoyoutube.soundcloud_search import SoundCloudSearcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
 from spotifytoyoutube.spotify_url import SpotifyResource, parse_spotify_url
@@ -206,8 +207,11 @@ def _match_spotify_tracks(
         spotify_client.enrich_tracks(tracks)
     console.print("[green]✓[/green] Enriched tracks with audio features & genres\n")
 
-    youtube_searcher = YouTubeSearcher(quiet=True)
-    matcher = TrackMatcher(youtube_searcher, cache=cache, skip_detailed_info=True)
+    matcher = TrackMatcher(
+        searchers=[YouTubeSearcher(quiet=True), SoundCloudSearcher(quiet=True)],
+        cache=cache,
+        skip_detailed_info=True,
+    )
 
     with Progress(
         SpinnerColumn(style="yellow"),
@@ -1119,9 +1123,8 @@ def run_match(
     authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
     sp = authenticator.get_client()
     spotify_client = SpotifyClient(sp)
-    youtube_searcher = YouTubeSearcher(quiet=True)
     matcher = TrackMatcher(
-        youtube_searcher,
+        searchers=[YouTubeSearcher(quiet=True), SoundCloudSearcher(quiet=True)],
         duration_threshold=duration_threshold,
         cache=cache,
         skip_detailed_info=fast,

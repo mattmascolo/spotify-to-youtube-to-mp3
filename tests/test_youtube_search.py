@@ -28,6 +28,18 @@ class TestYouTubeResult:
         )
         assert result.url == "https://www.youtube.com/watch?v=abc123"
 
+    def test_url_uses_override_when_set(self) -> None:
+        """override_url wins over the default YouTube url construction."""
+        result = YouTubeResult(
+            video_id="sc123",
+            title="Song",
+            duration_seconds=180,
+            audio_bitrate=128,
+            audio_codec="mp3",
+            override_url="https://soundcloud.com/artist/song",
+        )
+        assert result.url == "https://soundcloud.com/artist/song"
+
     def test_from_yt_dlp_info_handles_missing_audio_info(self) -> None:
         """YouTubeResult handles missing audio bitrate gracefully."""
         info = {

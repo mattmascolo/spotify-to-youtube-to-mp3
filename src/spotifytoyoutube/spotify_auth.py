@@ -1,9 +1,9 @@
-"""Spotify OAuth authentication handler."""
+"""Spotify authentication handlers (OAuth and Client Credentials)."""
 
 from pathlib import Path
 
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
 
 
 class SpotifyAuthenticator:
@@ -80,5 +80,34 @@ class SpotifyAuthenticator:
             open_browser=self.open_browser,
         )
 
+        self._client = spotipy.Spotify(auth_manager=auth_manager)
+        return self._client
+
+
+class SpotifyAppAuthenticator:
+    """
+    Client Credentials auth — no user login, no browser, no redirect.
+
+    Works for any **public** Spotify resource: tracks, albums, artists,
+    and public playlists. Does NOT work for the authenticated user's
+    liked songs or private/collaborative playlists (those need user OAuth).
+    """
+
+    def __init__(self, client_id: str, client_secret: str) -> None:
+        if not client_id:
+            raise ValueError("client_id is required")
+        if not client_secret:
+            raise ValueError("client_secret is required")
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self._client: spotipy.Spotify | None = None
+
+    def get_client(self) -> spotipy.Spotify:
+        if self._client is not None:
+            return self._client
+        auth_manager = SpotifyClientCredentials(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+        )
         self._client = spotipy.Spotify(auth_manager=auth_manager)
         return self._client

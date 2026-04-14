@@ -303,30 +303,45 @@ class SpotifyClient:
         self._enrich_artist_genres(tracks)
 
     def _enrich_audio_features(self, tracks: list[Track]) -> None:
-        """Batch-fetch audio features and apply to tracks."""
+        """
+        Batch-fetch audio features and apply to tracks.
+
+        Spotify restricted audio-features to user-auth tokens (and newer apps
+        may not have access at all), so this is best-effort: any failure is
+        logged to the spotipy logger and otherwise swallowed so it doesn't
+        break the match pipeline.
+        """
+        import logging
+
         audio_feature_fields = [
             "tempo", "energy", "danceability", "valence", "acousticness",
             "instrumentalness", "loudness", "speechiness", "liveness",
             "key", "time_signature", "mode",
         ]
 
-        for i in range(0, len(tracks), 100):
-            batch = tracks[i : i + 100]
-            ids = [t.id for t in batch]
-            try:
-                features_list = self._sp.audio_features(ids)
-            except Exception:
-                continue
-
-            if not features_list:
-                continue
-
-            for track, features in zip(batch, features_list):
-                if not features:
+        spotipy_logger = logging.getLogger("spotipy.client")
+        prior_level = spotipy_logger.level
+        spotipy_logger.setLevel(logging.CRITICAL)
+        try:
+            for i in range(0, len(tracks), 100):
+                batch = tracks[i : i + 100]
+                ids = [t.id for t in batch]
+                try:
+                    features_list = self._sp.audio_features(ids)
+                except Exception:
                     continue
-                for field_name in audio_feature_fields:
-                    if field_name in features:
-                        setattr(track, field_name, features[field_name])
+
+                if not features_list:
+                    continue
+
+                for track, features in zip(batch, features_list):
+                    if not features:
+                        continue
+                    for field_name in audio_feature_fields:
+                        if field_name in features:
+                            setattr(track, field_name, features[field_name])
+        finally:
+            spotipy_logger.setLevel(prior_level)
 
     def _enrich_artist_genres(self, tracks: list[Track]) -> None:
         """Batch-fetch artist genres and apply to tracks."""

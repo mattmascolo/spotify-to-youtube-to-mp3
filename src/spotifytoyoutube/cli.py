@@ -24,7 +24,7 @@ from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.organizer import build_path
 from spotifytoyoutube.soundcloud_search import SoundCloudSearcher
-from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
+from spotifytoyoutube.spotify_auth import SpotifyAppAuthenticator, SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
 from spotifytoyoutube.spotify_url import SpotifyResource, parse_spotify_url
 from spotifytoyoutube.tagger import tag_file
@@ -200,6 +200,46 @@ def _choose_playlists(client: SpotifyClient) -> list[PlaylistSummary]:
             chosen.append(playlists[idx])
             seen.add(idx)
     return chosen
+
+
+def _build_client_for_resource(
+    resource: SpotifyResource,
+    client_id: str,
+    client_secret: str,
+) -> SpotifyClient:
+    """
+    Pick the right Spotify auth for a resource.
+
+    Liked songs are user data and always need OAuth. Everything else
+    (track / album / artist / public playlist) works with Client
+    Credentials — no browser, no redirect, no user prompt.
+    """
+    if resource.kind == "liked":
+        authenticator = SpotifyAuthenticator(
+            client_id=client_id, client_secret=client_secret
+        )
+        return SpotifyClient(authenticator.get_client())
+
+    app_auth = SpotifyAppAuthenticator(
+        client_id=client_id, client_secret=client_secret
+    )
+    return SpotifyClient(app_auth.get_client())
+
+
+def _looks_like_auth_error(exc: Exception) -> bool:
+    """
+    True if an exception looks like Spotify refusing the request.
+
+    Accepts 401, 403, and 404. 404 is included because Spotify's
+    editorial playlists return 404 (not 403) when accessed via
+    Client Credentials auth — switching to user OAuth makes them
+    readable, so we want to trigger the fallback in that case too.
+    """
+    message = str(exc)
+    if any(code in message for code in ("401", "403", "404")):
+        return True
+    http_status = getattr(exc, "http_status", None)
+    return http_status in (401, 403, 404)
 
 
 def _tracks_for_resource(
@@ -1026,14 +1066,29 @@ def grab(
         console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
         sys.exit(1)
 
-    authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
-    sp = authenticator.get_client()
-    spotify_client = SpotifyClient(sp)
+    # Liked songs require user OAuth; public resources (track/album/artist/playlist)
+    # work with app-only Client Credentials auth — no browser, no prompt.
+    spotify_client = _build_client_for_resource(resource, client_id, client_secret)
 
     with console.status(
         f"[bold cyan]Fetching {resource.kind}...[/bold cyan]", spinner="dots"
     ):
-        tracks = _tracks_for_resource(resource, spotify_client, limit)
+        try:
+            tracks = _tracks_for_resource(resource, spotify_client, limit)
+        except Exception as exc:
+            # Private playlist? Fall back to user OAuth and retry.
+            if resource.kind == "playlist" and _looks_like_auth_error(exc):
+                console.print(
+                    "[yellow]Playlist appears to be private; switching to user "
+                    "login...[/yellow]"
+                )
+                fallback_auth = SpotifyAuthenticator(
+                    client_id=client_id, client_secret=client_secret
+                )
+                spotify_client = SpotifyClient(fallback_auth.get_client())
+                tracks = _tracks_for_resource(resource, spotify_client, limit)
+            else:
+                raise
 
     if not tracks:
         console.print("[yellow]No tracks found for that URL.[/yellow]")

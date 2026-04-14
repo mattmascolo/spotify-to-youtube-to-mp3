@@ -426,3 +426,84 @@ class TestPlaylistSupport:
         tracks = list(client.get_playlist_tracks("pl1"))
         assert len(tracks) == 120
         assert mock_sp.playlist_items.call_count == 2
+
+
+class TestAlbumArtistFetch:
+    """Tests for album and artist track helpers."""
+
+    def _make_full_track(self, idx: int) -> dict:
+        return {
+            "id": f"t{idx}",
+            "name": f"Song {idx}",
+            "artists": [{"name": "Artist", "id": "a1"}],
+            "album": {"name": "Album", "images": [], "release_date": "2023"},
+            "duration_ms": 180000,
+        }
+
+    def test_get_album_tracks_batches_through_tracks_api(self) -> None:
+        mock_sp = Mock()
+        mock_sp.album_tracks.return_value = {
+            "items": [{"id": f"t{i}"} for i in range(3)],
+            "next": None,
+        }
+        mock_sp.tracks.return_value = {
+            "tracks": [self._make_full_track(i) for i in range(3)],
+        }
+
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_album_tracks("alb1"))
+
+        assert len(tracks) == 3
+        assert all(t.artist == "Artist" for t in tracks)
+        mock_sp.album_tracks.assert_called_once_with("alb1", limit=50, offset=0)
+        mock_sp.tracks.assert_called_once_with(["t0", "t1", "t2"])
+
+    def test_get_album_tracks_respects_max_tracks(self) -> None:
+        mock_sp = Mock()
+        mock_sp.album_tracks.return_value = {
+            "items": [{"id": f"t{i}"} for i in range(20)],
+            "next": None,
+        }
+        mock_sp.tracks.return_value = {
+            "tracks": [self._make_full_track(i) for i in range(5)],
+        }
+
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_album_tracks("alb1", max_tracks=5))
+
+        assert len(tracks) == 5
+        mock_sp.tracks.assert_called_once_with(["t0", "t1", "t2", "t3", "t4"])
+
+    def test_get_album_tracks_skips_none_items(self) -> None:
+        mock_sp = Mock()
+        mock_sp.album_tracks.return_value = {
+            "items": [{"id": "t0"}, None, {"id": "t1"}],
+            "next": None,
+        }
+        mock_sp.tracks.return_value = {
+            "tracks": [self._make_full_track(0), self._make_full_track(1)],
+        }
+
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_album_tracks("alb1"))
+
+        assert len(tracks) == 2
+        mock_sp.tracks.assert_called_once_with(["t0", "t1"])
+
+    def test_get_artist_top_tracks(self) -> None:
+        mock_sp = Mock()
+        mock_sp.artist_top_tracks.return_value = {
+            "tracks": [self._make_full_track(0)],
+        }
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_artist_top_tracks("a1"))
+        assert len(tracks) == 1
+        assert tracks[0].name == "Song 0"
+        mock_sp.artist_top_tracks.assert_called_once_with("a1", country="US")
+
+    def test_get_artist_top_tracks_custom_country(self) -> None:
+        mock_sp = Mock()
+        mock_sp.artist_top_tracks.return_value = {"tracks": []}
+        client = SpotifyClient(mock_sp)
+        list(client.get_artist_top_tracks("a1", country="GB"))
+        mock_sp.artist_top_tracks.assert_called_once_with("a1", country="GB")

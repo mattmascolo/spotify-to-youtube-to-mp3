@@ -24,6 +24,7 @@ from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
 from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
+from spotifytoyoutube.spotify_url import SpotifyResource, parse_spotify_url
 from spotifytoyoutube.tagger import tag_file
 from spotifytoyoutube.youtube_search import YouTubeSearcher
 
@@ -162,6 +163,248 @@ def _choose_playlists(client: SpotifyClient) -> list[PlaylistSummary]:
             chosen.append(playlists[idx])
             seen.add(idx)
     return chosen
+
+
+def _tracks_for_resource(
+    resource: SpotifyResource,
+    client: SpotifyClient,
+    limit: int | None,
+) -> list[Track]:
+    """Fetch tracks described by a parsed Spotify resource."""
+    if resource.kind == "liked":
+        return list(client.get_liked_songs(max_tracks=limit))
+    if resource.kind == "playlist":
+        return list(client.get_playlist_tracks(resource.id or "", max_tracks=limit))
+    if resource.kind == "album":
+        return list(client.get_album_tracks(resource.id or "", max_tracks=limit))
+    if resource.kind == "artist":
+        return list(client.get_artist_top_tracks(resource.id or ""))
+    if resource.kind == "track":
+        data = client._sp.track(resource.id)
+        if not data:
+            return []
+        tracks = [Track.from_api_response(data)]
+        return tracks if limit is None else tracks[:limit]
+    raise ValueError(f"Unsupported resource kind: {resource.kind}")
+
+
+def _match_spotify_tracks(
+    spotify_client: SpotifyClient,
+    tracks: list[Track],
+    cache: "MatchCache | None",
+    workers: int = 8,
+) -> list[MatchResult]:
+    """Enrich tracks, run parallel YouTube matching with a progress bar."""
+    match_results: list[MatchResult] = []
+    if not tracks:
+        return match_results
+
+    with console.status(
+        "[bold green]🎵 Enriching tracks with metadata...[/bold green]", spinner="dots"
+    ):
+        spotify_client.enrich_tracks(tracks)
+    console.print("[green]✓[/green] Enriched tracks with audio features & genres\n")
+
+    youtube_searcher = YouTubeSearcher(quiet=True)
+    matcher = TrackMatcher(youtube_searcher, cache=cache, skip_detailed_info=True)
+
+    with Progress(
+        SpinnerColumn(style="yellow"),
+        TextColumn("[bold]{task.description}[/bold]"),
+        BarColumn(bar_width=40),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("⚡ Matching songs...", total=len(tracks))
+
+        def on_complete(track: Track, result: MatchResult | None) -> None:
+            progress.advance(task)
+            if result:
+                match_results.append(result)
+
+        matcher.find_matches_parallel(tracks, max_workers=workers, on_complete=on_complete)
+
+    console.print(f"\n[green]✓[/green] Matched [bold]{len(match_results)}[/bold] songs\n")
+    return match_results
+
+
+def _execute_download(
+    match_results: list[MatchResult],
+    urls: list[str],
+    output_path: Path,
+    audio_format: str,
+    no_tags: bool,
+    keep_video: bool,
+) -> None:
+    """Run yt-dlp to download and optionally tag files."""
+    import subprocess
+
+    output_template = str(output_path / "%(title)s.%(ext)s")
+
+    if match_results and not no_tags:
+        console.print(
+            Panel(
+                f"[bold yellow]📥 Downloading & tagging {len(match_results)} songs"
+                f"[/bold yellow]\n\n"
+                f"[dim]Format:[/dim] {audio_format}\n"
+                f"[dim]Output:[/dim] {output_path}\n"
+                f"[dim]Tags:[/dim]  Enabled",
+                border_style="yellow",
+            )
+        )
+        console.print()
+
+        download_ok = 0
+        download_fail = 0
+        tag_ok = 0
+        tag_fail = 0
+
+        with Progress(
+            SpinnerColumn(style="yellow"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            dl_task = progress.add_task("📥 Downloading...", total=len(match_results))
+
+            for mr in match_results:
+                progress.update(
+                    dl_task,
+                    description=f"📥 [cyan]{mr.track.artist}[/cyan] - {mr.track.name[:30]}",
+                )
+                url = mr.youtube_result.url
+                cmd = [
+                    "yt-dlp", "--no-warnings", "-o", output_template,
+                    "--print", "after_move:filepath",
+                    "--quiet",
+                ]
+                if not keep_video:
+                    cmd.extend(["-x", "--audio-format", audio_format])
+                cmd.append(url)
+
+                try:
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, check=False,
+                    )
+                    if result.returncode != 0:
+                        download_fail += 1
+                        progress.advance(dl_task)
+                        continue
+
+                    filepath_str = (
+                        result.stdout.strip().splitlines()[-1]
+                        if result.stdout.strip()
+                        else ""
+                    )
+                    if not filepath_str or not Path(filepath_str).exists():
+                        download_fail += 1
+                        progress.advance(dl_task)
+                        continue
+
+                    download_ok += 1
+                    filepath = Path(filepath_str)
+
+                    if tag_file(filepath, mr, audio_format):
+                        tag_ok += 1
+                    else:
+                        tag_fail += 1
+
+                except FileNotFoundError:
+                    console.print(
+                        Panel(
+                            "[red]✗[/red] yt-dlp not found!\n\n"
+                            "[dim]Install with:[/dim]\n"
+                            "  [bold]pip install yt-dlp[/bold]",
+                            title="Error",
+                            border_style="red",
+                        )
+                    )
+                    sys.exit(1)
+
+                progress.advance(dl_task)
+
+        console.print()
+        tag_info = f"\n[dim]Tagged:[/dim] {tag_ok}/{download_ok}"
+        if tag_fail:
+            tag_info += f" [yellow]({tag_fail} tag failures)[/yellow]"
+
+        if download_fail == 0:
+            console.print(
+                Panel(
+                    f"[green]✓[/green] Downloaded [bold]{download_ok}[/bold] songs to:\n"
+                    f"  [cyan]{output_path}[/cyan]{tag_info}",
+                    title="[bold]COMPLETE[/bold]",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[yellow]⚠[/yellow] Downloaded {download_ok}/{len(match_results)} "
+                    f"songs.\n"
+                    f"Check [cyan]{output_path}[/cyan] for downloaded files.{tag_info}\n\n"
+                    f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
+                    f"  [bold]sudo apt install ffmpeg[/bold]",
+                    title="[bold]PARTIAL[/bold]",
+                    border_style="yellow",
+                )
+            )
+        return
+
+    all_urls = [mr.youtube_result.url for mr in match_results] if match_results else urls
+    console.print(
+        Panel(
+            f"[bold yellow]📥 Downloading {len(all_urls)} songs[/bold yellow]\n\n"
+            f"[dim]Format:[/dim] {audio_format}\n"
+            f"[dim]Output:[/dim] {output_path}",
+            border_style="yellow",
+        )
+    )
+    console.print()
+
+    cmd = ["yt-dlp", "--no-warnings", "-o", output_template]
+    if not keep_video:
+        cmd.extend(["-x", "--audio-format", audio_format])
+    cmd.append("--progress")
+    cmd.extend(all_urls)
+
+    try:
+        console.print("[dim]Starting downloads...[/dim]\n")
+        result = subprocess.run(cmd, check=False)
+
+        console.print()
+        if result.returncode == 0:
+            console.print(
+                Panel(
+                    f"[green]✓[/green] Downloaded [bold]{len(all_urls)}[/bold] songs to:\n"
+                    f"  [cyan]{output_path}[/cyan]",
+                    title="[bold]COMPLETE[/bold]",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[yellow]⚠[/yellow] Download completed with some errors.\n"
+                    f"Check [cyan]{output_path}[/cyan] for downloaded files.\n\n"
+                    f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
+                    f"  [bold]sudo apt install ffmpeg[/bold]",
+                    title="[bold]PARTIAL[/bold]",
+                    border_style="yellow",
+                )
+            )
+    except FileNotFoundError:
+        console.print(
+            Panel(
+                "[red]✗[/red] yt-dlp not found!\n\n"
+                "[dim]Install with:[/dim]\n"
+                "  [bold]pip install yt-dlp[/bold]",
+                title="Error",
+                border_style="red",
+            )
+        )
+        sys.exit(1)
 
 
 def interactive_wizard() -> None:
@@ -433,7 +676,6 @@ def download(
     interactive: bool | None,
 ) -> None:
     """Download matched songs as audio files."""
-    import subprocess
 
     show_banner(mini=True)
     console.print()
@@ -627,13 +869,10 @@ def download(
             console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
             sys.exit(1)
 
-        # Setup and run matcher
         cache = MatchCache()
         authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
         sp = authenticator.get_client()
         spotify_client = SpotifyClient(sp)
-        youtube_searcher = YouTubeSearcher(quiet=True)
-        matcher = TrackMatcher(youtube_searcher, cache=cache, skip_detailed_info=True)
 
         source_label = (
             f"{len(playlist_ids)} playlist(s)" if playlist_ids else "liked songs"
@@ -642,201 +881,105 @@ def download(
             f"[bold green]🎵 Loading {source_label}...[/bold green]", spinner="dots"
         ):
             tracks = _load_tracks(spotify_client, limit=limit, playlist_ids=playlist_ids)
-
         console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks")
 
-        with console.status("[bold green]🎵 Enriching tracks with metadata...[/bold green]", spinner="dots"):
-            spotify_client.enrich_tracks(tracks)
-
-        console.print("[green]✓[/green] Enriched tracks with audio features & genres\n")
-
-        with Progress(
-            SpinnerColumn(style="yellow"),
-            TextColumn("[bold]{task.description}[/bold]"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("⚡ Matching songs...", total=len(tracks))
-
-            def on_complete(track: Track, result: MatchResult | None) -> None:
-                progress.advance(task)
-                if result:
-                    match_results.append(result)
-
-            matcher.find_matches_parallel(tracks, max_workers=8, on_complete=on_complete)
-
-        console.print(f"\n[green]✓[/green] Matched [bold]{len(match_results)}[/bold] songs\n")
+        match_results = _match_spotify_tracks(spotify_client, tracks, cache=cache)
 
     total_items = len(match_results) or len(urls)
     if total_items == 0:
         console.print("[red]No URLs to download![/red]")
         return
 
-    # Filename template - clean format
-    output_template = str(output_path / "%(title)s.%(ext)s")
+    _execute_download(
+        match_results=match_results,
+        urls=urls,
+        output_path=output_path,
+        audio_format=audio_format,
+        no_tags=no_tags,
+        keep_video=keep_video,
+    )
 
-    if match_results and not no_tags:
-        # Per-file download + tag loop (we have Spotify metadata)
-        console.print(
-            Panel(
-                f"[bold yellow]📥 Downloading & tagging {len(match_results)} songs[/bold yellow]\n\n"
-                f"[dim]Format:[/dim] {audio_format}\n"
-                f"[dim]Output:[/dim] {output_path}\n"
-                f"[dim]Tags:[/dim]  Enabled",
-                border_style="yellow",
-            )
-        )
-        console.print()
 
-        download_ok = 0
-        download_fail = 0
-        tag_ok = 0
-        tag_fail = 0
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output-dir", "-o", default="~/Music/SpotifyDownloads",
+    help="Download directory (default: ~/Music/SpotifyDownloads)",
+)
+@click.option(
+    "--format", "-f", "audio_format", default="mp3",
+    help="Audio format: mp3, opus, m4a, wav (default: mp3)",
+)
+@click.option(
+    "--limit", "-l", default=None, type=int,
+    help="Cap the number of tracks fetched (default: all)",
+)
+@click.option("--no-tags", is_flag=True, help="Skip embedding metadata tags")
+@click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
+def grab(
+    url: str,
+    output_dir: str,
+    audio_format: str,
+    limit: int | None,
+    no_tags: bool,
+    keep_video: bool,
+) -> None:
+    """Grab any Spotify URL (track, album, playlist, artist, or 'liked')."""
+    show_banner(mini=True)
+    console.print()
 
-        with Progress(
-            SpinnerColumn(style="yellow"),
-            TextColumn("[bold]{task.description}[/bold]"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            dl_task = progress.add_task("📥 Downloading...", total=len(match_results))
+    try:
+        resource = parse_spotify_url(url)
+    except ValueError as exc:
+        console.print(Panel(f"[red]{exc}[/red]", title="Invalid URL", border_style="red"))
+        sys.exit(1)
 
-            for mr in match_results:
-                progress.update(
-                    dl_task,
-                    description=f"📥 [cyan]{mr.track.artist}[/cyan] - {mr.track.name[:30]}",
-                )
-                url = mr.youtube_result.url
-                cmd = [
-                    "yt-dlp", "--no-warnings", "-o", output_template,
-                    "--print", "after_move:filepath",
-                    "--quiet",
-                ]
-                if not keep_video:
-                    cmd.extend(["-x", "--audio-format", audio_format])
-                cmd.append(url)
+    descriptor = (
+        f"{resource.kind} [dim]{resource.id}[/dim]"
+        if resource.id
+        else resource.kind
+    )
+    console.print(f"[green]✓[/green] Parsed: [bold]{descriptor}[/bold]\n")
 
-                try:
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, check=False,
-                    )
-                    if result.returncode != 0:
-                        download_fail += 1
-                        progress.advance(dl_task)
-                        continue
+    try:
+        client_id, client_secret = get_spotify_credentials()
+    except click.ClickException as e:
+        console.print(Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red"))
+        sys.exit(1)
 
-                    filepath_str = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-                    if not filepath_str or not Path(filepath_str).exists():
-                        download_fail += 1
-                        progress.advance(dl_task)
-                        continue
+    authenticator = SpotifyAuthenticator(client_id=client_id, client_secret=client_secret)
+    sp = authenticator.get_client()
+    spotify_client = SpotifyClient(sp)
 
-                    download_ok += 1
-                    filepath = Path(filepath_str)
+    with console.status(
+        f"[bold cyan]Fetching {resource.kind}...[/bold cyan]", spinner="dots"
+    ):
+        tracks = _tracks_for_resource(resource, spotify_client, limit)
 
-                    if tag_file(filepath, mr, audio_format):
-                        tag_ok += 1
-                    else:
-                        tag_fail += 1
+    if not tracks:
+        console.print("[yellow]No tracks found for that URL.[/yellow]")
+        return
 
-                except FileNotFoundError:
-                    console.print(
-                        Panel(
-                            "[red]✗[/red] yt-dlp not found!\n\n"
-                            "[dim]Install with:[/dim]\n"
-                            "  [bold]pip install yt-dlp[/bold]",
-                            title="Error",
-                            border_style="red",
-                        )
-                    )
-                    sys.exit(1)
+    console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks\n")
 
-                progress.advance(dl_task)
+    cache = MatchCache()
+    match_results = _match_spotify_tracks(spotify_client, tracks, cache=cache)
 
-        console.print()
-        tag_info = f"\n[dim]Tagged:[/dim] {tag_ok}/{download_ok}"
-        if tag_fail:
-            tag_info += f" [yellow]({tag_fail} tag failures)[/yellow]"
+    if not match_results:
+        console.print("[red]No YouTube matches found.[/red]")
+        return
 
-        if download_fail == 0:
-            console.print(
-                Panel(
-                    f"[green]✓[/green] Downloaded [bold]{download_ok}[/bold] songs to:\n"
-                    f"  [cyan]{output_path}[/cyan]{tag_info}",
-                    title="[bold]COMPLETE[/bold]",
-                    border_style="green",
-                )
-            )
-        else:
-            console.print(
-                Panel(
-                    f"[yellow]⚠[/yellow] Downloaded {download_ok}/{len(match_results)} songs.\n"
-                    f"Check [cyan]{output_path}[/cyan] for downloaded files.{tag_info}\n\n"
-                    f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
-                    f"  [bold]sudo apt install ffmpeg[/bold]",
-                    title="[bold]PARTIAL[/bold]",
-                    border_style="yellow",
-                )
-            )
-    else:
-        # Batch download (input file or --no-tags)
-        all_urls = [mr.youtube_result.url for mr in match_results] if match_results else urls
-        console.print(
-            Panel(
-                f"[bold yellow]📥 Downloading {len(all_urls)} songs[/bold yellow]\n\n"
-                f"[dim]Format:[/dim] {audio_format}\n"
-                f"[dim]Output:[/dim] {output_path}",
-                border_style="yellow",
-            )
-        )
-        console.print()
+    output_path = Path(output_dir).expanduser()
+    output_path.mkdir(parents=True, exist_ok=True)
 
-        cmd = ["yt-dlp", "--no-warnings", "-o", output_template]
-
-        if not keep_video:
-            cmd.extend(["-x", "--audio-format", audio_format])
-
-        cmd.append("--progress")
-        cmd.extend(all_urls)
-
-        try:
-            console.print("[dim]Starting downloads...[/dim]\n")
-            result = subprocess.run(cmd, check=False)
-
-            console.print()
-            if result.returncode == 0:
-                console.print(
-                    Panel(
-                        f"[green]✓[/green] Downloaded [bold]{len(all_urls)}[/bold] songs to:\n"
-                        f"  [cyan]{output_path}[/cyan]",
-                        title="[bold]COMPLETE[/bold]",
-                        border_style="green",
-                    )
-                )
-            else:
-                console.print(
-                    Panel(
-                        f"[yellow]⚠[/yellow] Download completed with some errors.\n"
-                        f"Check [cyan]{output_path}[/cyan] for downloaded files.\n\n"
-                        f"[dim]If you see ffmpeg errors, install it with:[/dim]\n"
-                        f"  [bold]sudo apt install ffmpeg[/bold]",
-                        title="[bold]PARTIAL[/bold]",
-                        border_style="yellow",
-                    )
-                )
-        except FileNotFoundError:
-            console.print(
-                Panel(
-                    "[red]✗[/red] yt-dlp not found!\n\n"
-                    "[dim]Install with:[/dim]\n"
-                    "  [bold]pip install yt-dlp[/bold]",
-                    title="Error",
-                    border_style="red",
-                )
-            )
-            sys.exit(1)
+    _execute_download(
+        match_results=match_results,
+        urls=[],
+        output_path=output_path,
+        audio_format=audio_format,
+        no_tags=no_tags,
+        keep_video=keep_video,
+    )
 
 
 @main.command()

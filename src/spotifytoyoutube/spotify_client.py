@@ -241,6 +241,57 @@ class SpotifyClient:
                 break
             offset += limit
 
+    def get_album_tracks(
+        self,
+        album_id: str,
+        max_tracks: int | None = None,
+    ) -> Iterator[Track]:
+        """
+        Yield full Track objects for every track on an album.
+
+        Uses album_tracks to discover track IDs, then batches sp.tracks()
+        calls so the resulting Track objects carry full album metadata.
+        """
+        offset = 0
+        track_ids: list[str] = []
+        while True:
+            response = self._sp.album_tracks(album_id, limit=50, offset=offset)
+            items = response.get("items", [])
+            if not items:
+                break
+            for item in items:
+                if not item:
+                    continue
+                tid = item.get("id")
+                if not tid:
+                    continue
+                track_ids.append(tid)
+                if max_tracks and len(track_ids) >= max_tracks:
+                    break
+            if max_tracks and len(track_ids) >= max_tracks:
+                break
+            if not response.get("next"):
+                break
+            offset += 50
+
+        for i in range(0, len(track_ids), 50):
+            batch = track_ids[i : i + 50]
+            result = self._sp.tracks(batch)
+            for track_data in result.get("tracks", []):
+                if track_data:
+                    yield Track.from_api_response(track_data)
+
+    def get_artist_top_tracks(
+        self,
+        artist_id: str,
+        country: str = "US",
+    ) -> Iterator[Track]:
+        """Yield the artist's top tracks for a given market (up to 10)."""
+        response = self._sp.artist_top_tracks(artist_id, country=country)
+        for track_data in response.get("tracks", []):
+            if track_data:
+                yield Track.from_api_response(track_data)
+
     def enrich_tracks(self, tracks: list[Track]) -> None:
         """Enrich tracks with audio features and artist genres (in-place)."""
         self._enrich_audio_features(tracks)

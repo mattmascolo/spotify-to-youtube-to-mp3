@@ -9,7 +9,11 @@ from spotipy.oauth2 import SpotifyOAuth
 class SpotifyAuthenticator:
     """Handles Spotify OAuth authentication with token caching."""
 
-    REQUIRED_SCOPES = ["user-library-read"]
+    REQUIRED_SCOPES = [
+        "user-library-read",
+        "playlist-read-private",
+        "playlist-read-collaborative",
+    ]
     DEFAULT_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
     def __init__(

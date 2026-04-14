@@ -92,6 +92,31 @@ class Track:
         return f"{self.artist} - {self.name}"
 
 
+@dataclass
+class PlaylistSummary:
+    """Lightweight summary of a Spotify playlist for listing / selection."""
+
+    id: str
+    name: str
+    owner: str
+    track_count: int
+    public: bool
+    collaborative: bool
+    description: str = ""
+
+    @classmethod
+    def from_api_response(cls, data: dict[str, Any]) -> "PlaylistSummary":
+        return cls(
+            id=data["id"],
+            name=data.get("name") or "Untitled",
+            owner=(data.get("owner") or {}).get("display_name") or "Unknown",
+            track_count=(data.get("tracks") or {}).get("total", 0),
+            public=bool(data.get("public")),
+            collaborative=bool(data.get("collaborative")),
+            description=data.get("description") or "",
+        )
+
+
 class SpotifyClient:
     """Client for interacting with Spotify API."""
 
@@ -141,6 +166,79 @@ class SpotifyClient:
             if not response.get("next"):
                 break
 
+            offset += limit
+
+    def get_user_playlists(
+        self,
+        limit: int = 50,
+    ) -> Iterator[PlaylistSummary]:
+        """
+        Yield all playlists owned or followed by the authenticated user.
+
+        Args:
+            limit: Page size for each API request (max 50)
+
+        Yields:
+            PlaylistSummary instances
+        """
+        offset = 0
+        while True:
+            response = self._sp.current_user_playlists(limit=limit, offset=offset)
+            items = response.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                if item:
+                    yield PlaylistSummary.from_api_response(item)
+
+            if not response.get("next"):
+                break
+            offset += limit
+
+    def get_playlist_tracks(
+        self,
+        playlist_id: str,
+        limit: int = 100,
+        max_tracks: int | None = None,
+    ) -> Iterator[Track]:
+        """
+        Yield tracks from a specific playlist, skipping local / None entries.
+
+        Args:
+            playlist_id: Spotify playlist ID
+            limit: Page size for each API request (max 100)
+            max_tracks: Maximum total tracks to yield (None for all)
+
+        Yields:
+            Track instances
+        """
+        offset = 0
+        fetched = 0
+        while True:
+            response = self._sp.playlist_items(
+                playlist_id,
+                limit=limit,
+                offset=offset,
+                additional_types=("track",),
+            )
+            items = response.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                if item.get("is_local"):
+                    continue
+                track_data = item.get("track")
+                if not track_data:
+                    continue
+                yield Track.from_api_response(track_data)
+                fetched += 1
+                if max_tracks and fetched >= max_tracks:
+                    return
+
+            if not response.get("next"):
+                break
             offset += limit
 
     def enrich_tracks(self, tracks: list[Track]) -> None:

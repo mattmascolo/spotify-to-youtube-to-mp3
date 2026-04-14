@@ -33,6 +33,13 @@ class TestSpotifyAuthenticator:
         auth = SpotifyAuthenticator(client_id="id", client_secret="secret")
         assert "user-library-read" in auth.scopes
 
+    def test_required_scopes_include_playlist_read(self) -> None:
+        """Authenticator requests playlist read scopes for playlist support."""
+        auth = SpotifyAuthenticator(client_id="cid", client_secret="secret")
+        assert "user-library-read" in auth.scopes
+        assert "playlist-read-private" in auth.scopes
+        assert "playlist-read-collaborative" in auth.scopes
+
     @patch("spotifytoyoutube.spotify_auth.spotipy.Spotify")
     @patch("spotifytoyoutube.spotify_auth.SpotifyOAuth")
     def test_get_client_returns_authenticated_spotify(

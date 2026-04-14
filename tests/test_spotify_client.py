@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock
 
-from spotifytoyoutube.spotify_client import SpotifyClient, Track
+from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
 
 
 class TestTrack:
@@ -219,3 +219,210 @@ class TestSpotifyClient:
 
         mock_sp.audio_features.assert_called_once()
         mock_sp.artists.assert_called_once()
+
+
+class TestPlaylistSupport:
+    """Tests for playlist listing and fetching."""
+
+    def test_playlist_summary_from_api_response(self) -> None:
+        data = {
+            "id": "pl1",
+            "name": "Road Trip",
+            "owner": {"display_name": "Matt"},
+            "tracks": {"total": 42},
+            "public": True,
+            "collaborative": False,
+            "description": "bangers",
+        }
+        summary = PlaylistSummary.from_api_response(data)
+        assert summary.id == "pl1"
+        assert summary.name == "Road Trip"
+        assert summary.owner == "Matt"
+        assert summary.track_count == 42
+        assert summary.public is True
+        assert summary.collaborative is False
+        assert summary.description == "bangers"
+
+    def test_playlist_summary_handles_missing_fields(self) -> None:
+        summary = PlaylistSummary.from_api_response({"id": "x"})
+        assert summary.id == "x"
+        assert summary.name == "Untitled"
+        assert summary.owner == "Unknown"
+        assert summary.track_count == 0
+        assert summary.public is False
+        assert summary.collaborative is False
+        assert summary.description == ""
+
+    def test_get_user_playlists_single_page(self) -> None:
+        mock_sp = Mock()
+        mock_sp.current_user_playlists.return_value = {
+            "items": [
+                {
+                    "id": "pl1",
+                    "name": "Road Trip",
+                    "owner": {"display_name": "Matt"},
+                    "tracks": {"total": 42},
+                    "public": True,
+                    "collaborative": False,
+                    "description": "bangers",
+                },
+                {
+                    "id": "pl2",
+                    "name": "Chill",
+                    "owner": {"display_name": "Matt"},
+                    "tracks": {"total": 17},
+                    "public": False,
+                    "collaborative": True,
+                    "description": "",
+                },
+            ],
+            "next": None,
+        }
+        client = SpotifyClient(mock_sp)
+        playlists = list(client.get_user_playlists())
+
+        assert len(playlists) == 2
+        assert playlists[0].id == "pl1"
+        assert playlists[0].name == "Road Trip"
+        assert playlists[0].owner == "Matt"
+        assert playlists[0].track_count == 42
+        assert playlists[0].public is True
+        assert playlists[1].collaborative is True
+
+    def test_get_user_playlists_pagination(self) -> None:
+        def make_page(start: int, count: int, has_next: bool) -> dict:
+            return {
+                "items": [
+                    {
+                        "id": f"pl{i}",
+                        "name": f"Playlist {i}",
+                        "owner": {"display_name": "Matt"},
+                        "tracks": {"total": 10},
+                        "public": True,
+                        "collaborative": False,
+                        "description": "",
+                    }
+                    for i in range(start, start + count)
+                ],
+                "next": "https://api.spotify.com/next" if has_next else None,
+            }
+
+        mock_sp = Mock()
+        mock_sp.current_user_playlists.side_effect = [
+            make_page(0, 50, has_next=True),
+            make_page(50, 1, has_next=False),
+        ]
+        client = SpotifyClient(mock_sp)
+        playlists = list(client.get_user_playlists())
+        assert len(playlists) == 51
+        assert mock_sp.current_user_playlists.call_count == 2
+
+    def test_get_user_playlists_skips_none_items(self) -> None:
+        mock_sp = Mock()
+        mock_sp.current_user_playlists.return_value = {
+            "items": [
+                None,
+                {
+                    "id": "pl1",
+                    "name": "Chill",
+                    "owner": {"display_name": "Matt"},
+                    "tracks": {"total": 10},
+                    "public": True,
+                    "collaborative": False,
+                    "description": "",
+                },
+            ],
+            "next": None,
+        }
+        client = SpotifyClient(mock_sp)
+        playlists = list(client.get_user_playlists())
+        assert len(playlists) == 1
+        assert playlists[0].id == "pl1"
+
+    def test_get_playlist_tracks_skips_none_and_local(self) -> None:
+        mock_sp = Mock()
+        mock_sp.playlist_items.return_value = {
+            "items": [
+                {
+                    "track": {
+                        "id": "t1",
+                        "name": "Good Song",
+                        "artists": [{"name": "Artist"}],
+                        "album": {"name": "Album"},
+                        "duration_ms": 180000,
+                    },
+                    "is_local": False,
+                },
+                {"track": None, "is_local": False},
+                {
+                    "track": {
+                        "id": "local1",
+                        "name": "Local File",
+                        "artists": [{"name": "Artist"}],
+                        "album": {"name": "Album"},
+                        "duration_ms": 180000,
+                    },
+                    "is_local": True,
+                },
+            ],
+            "next": None,
+        }
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_playlist_tracks("pl1"))
+
+        assert len(tracks) == 1
+        assert tracks[0].id == "t1"
+        mock_sp.playlist_items.assert_called_once_with(
+            "pl1", limit=100, offset=0, additional_types=("track",)
+        )
+
+    def test_get_playlist_tracks_respects_max_tracks(self) -> None:
+        mock_sp = Mock()
+        mock_sp.playlist_items.return_value = {
+            "items": [
+                {
+                    "track": {
+                        "id": f"t{i}",
+                        "name": f"Song {i}",
+                        "artists": [{"name": "Artist"}],
+                        "album": {"name": "Album"},
+                        "duration_ms": 180000,
+                    },
+                    "is_local": False,
+                }
+                for i in range(100)
+            ],
+            "next": "https://api.spotify.com/next",
+        }
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_playlist_tracks("pl1", max_tracks=5))
+        assert len(tracks) == 5
+
+    def test_get_playlist_tracks_pagination(self) -> None:
+        def make_page(start: int, count: int, has_next: bool) -> dict:
+            return {
+                "items": [
+                    {
+                        "track": {
+                            "id": f"t{i}",
+                            "name": f"Song {i}",
+                            "artists": [{"name": "Artist"}],
+                            "album": {"name": "Album"},
+                            "duration_ms": 180000,
+                        },
+                        "is_local": False,
+                    }
+                    for i in range(start, start + count)
+                ],
+                "next": "https://api.spotify.com/next" if has_next else None,
+            }
+
+        mock_sp = Mock()
+        mock_sp.playlist_items.side_effect = [
+            make_page(0, 100, has_next=True),
+            make_page(100, 20, has_next=False),
+        ]
+        client = SpotifyClient(mock_sp)
+        tracks = list(client.get_playlist_tracks("pl1"))
+        assert len(tracks) == 120
+        assert mock_sp.playlist_items.call_count == 2

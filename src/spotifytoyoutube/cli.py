@@ -23,7 +23,7 @@ from spotifytoyoutube.cache import MatchCache
 from spotifytoyoutube.export import Exporter, load_matches_from_json
 from spotifytoyoutube.matcher import MatchResult, TrackMatcher
 from spotifytoyoutube.spotify_auth import SpotifyAuthenticator
-from spotifytoyoutube.spotify_client import SpotifyClient, Track
+from spotifytoyoutube.spotify_client import PlaylistSummary, SpotifyClient, Track
 from spotifytoyoutube.tagger import tag_file
 from spotifytoyoutube.youtube_search import YouTubeSearcher
 
@@ -94,6 +94,76 @@ def show_banner(mini: bool = False) -> None:
         console.print(BANNER)
 
 
+def _load_tracks(
+    client: SpotifyClient,
+    limit: int | None,
+    playlist_ids: tuple[str, ...] | list[str] = (),
+) -> list[Track]:
+    """
+    Load tracks from liked songs or one-or-more playlists.
+
+    If playlist_ids is non-empty, tracks are fetched from those playlists in order
+    and capped at `limit` total across all playlists. Otherwise, liked songs.
+    """
+    tracks: list[Track] = []
+    if playlist_ids:
+        for pid in playlist_ids:
+            remaining = None if limit is None else max(0, limit - len(tracks))
+            if remaining == 0:
+                break
+            for track in client.get_playlist_tracks(pid, max_tracks=remaining):
+                tracks.append(track)
+                if limit is not None and len(tracks) >= limit:
+                    break
+    else:
+        for track in client.get_liked_songs(max_tracks=limit):
+            tracks.append(track)
+    return tracks
+
+
+def _choose_playlists(client: SpotifyClient) -> list[PlaylistSummary]:
+    """Interactively choose one or more playlists from the user's library."""
+    with console.status("[bold cyan]🎶 Loading your playlists...[/bold cyan]", spinner="dots"):
+        playlists = list(client.get_user_playlists())
+
+    if not playlists:
+        console.print("[yellow]No playlists found on your account.[/yellow]")
+        return []
+
+    table = Table(title="[bold]Your Playlists[/bold]", border_style="cyan")
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("Name", style="cyan")
+    table.add_column("Owner", style="green")
+    table.add_column("Tracks", justify="right", style="yellow")
+    for i, pl in enumerate(playlists, 1):
+        table.add_row(str(i), pl.name, pl.owner, str(pl.track_count))
+    console.print(table)
+
+    console.print(
+        "\n[bold]Enter playlist numbers (comma-separated, e.g. '1,3,5') "
+        "or 'all':[/bold]"
+    )
+    raw = Prompt.ask("  Choice", default="1", console=console)
+
+    if raw.strip().lower() == "all":
+        return playlists
+
+    chosen: list[PlaylistSummary] = []
+    seen: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            idx = int(part) - 1
+        except ValueError:
+            continue
+        if 0 <= idx < len(playlists) and idx not in seen:
+            chosen.append(playlists[idx])
+            seen.add(idx)
+    return chosen
+
+
 def interactive_wizard() -> None:
     """Interactive wizard for matching Spotify songs to YouTube."""
     show_banner()
@@ -126,6 +196,31 @@ def interactive_wizard() -> None:
         sys.exit(1)
 
     console.print("[green]✓[/green] Spotify credentials found!\n")
+
+    # Question 0: Source (liked songs vs a playlist)
+    console.print("[bold]📂 Source[/bold]")
+    console.print("  [cyan]1.[/cyan] Liked Songs")
+    console.print("  [cyan]2.[/cyan] Pick from your playlists")
+    source_choice = Prompt.ask(
+        "  Choose source",
+        choices=["1", "2"],
+        default="1",
+        console=console,
+    )
+    console.print()
+
+    chosen_playlist_ids: tuple[str, ...] = ()
+    if source_choice == "2":
+        preview_auth = SpotifyAuthenticator(
+            client_id=client_id, client_secret=client_secret
+        )
+        preview_sp = preview_auth.get_client()
+        chosen = _choose_playlists(SpotifyClient(preview_sp))
+        if not chosen:
+            console.print("[yellow]No playlists selected. Exiting.[/yellow]")
+            return
+        chosen_playlist_ids = tuple(pl.id for pl in chosen)
+        console.print()
 
     # Question 1: Number of songs
     console.print("[bold]📊 How many songs would you like to match?[/bold]")
@@ -234,6 +329,7 @@ def interactive_wizard() -> None:
         workers=workers,
         no_cache=not use_cache,
         show_banner_=False,  # Already shown at wizard start
+        playlist_ids=chosen_playlist_ids,
     )
 
 
@@ -321,6 +417,10 @@ def clear_cache() -> None:
 @click.option("--limit", "-l", default=None, type=int, help="Number of songs to match (if no input file)")
 @click.option("--keep-video", is_flag=True, help="Keep video file instead of extracting audio")
 @click.option("--no-tags", is_flag=True, help="Skip embedding metadata tags in downloaded files")
+@click.option(
+    "--playlist", "-p", "playlist_ids", multiple=True,
+    help="Match tracks from a playlist ID instead of liked songs (repeatable)",
+)
 @click.option("--interactive/--no-interactive", default=None, help="Force interactive/non-interactive mode")
 def download(
     input_file: str | None,
@@ -329,6 +429,7 @@ def download(
     limit: int | None,
     keep_video: bool,
     no_tags: bool,
+    playlist_ids: tuple[str, ...],
     interactive: bool | None,
 ) -> None:
     """Download matched songs as audio files."""
@@ -347,6 +448,7 @@ def download(
         and limit is None
         and not keep_video
         and not no_tags
+        and not playlist_ids
     )
 
     if run_interactive:
@@ -361,18 +463,19 @@ def download(
 
         # Question 1: Source
         console.print("[bold]📂 Where should I get the songs from?[/bold]")
-        console.print("  [cyan]1.[/cyan] Match from Spotify (fetch liked songs and find YouTube matches)")
-        console.print("  [cyan]2.[/cyan] Use existing playlist file (.txt or .m3u)")
+        console.print("  [cyan]1.[/cyan] Liked Songs (match and download)")
+        console.print("  [cyan]2.[/cyan] Pick from your Spotify playlists")
+        console.print("  [cyan]3.[/cyan] Use existing playlist file (.txt or .m3u)")
 
         source_choice = Prompt.ask(
             "  Choose source",
-            choices=["1", "2"],
+            choices=["1", "2", "3"],
             default="1",
             console=console,
         )
         console.print()
 
-        if source_choice == "2":
+        if source_choice == "3":
             input_file = Prompt.ask(
                 "  Path to playlist file",
                 console=console,
@@ -381,6 +484,25 @@ def download(
                 console.print(f"[red]File not found: {input_file}[/red]")
                 sys.exit(1)
         else:
+            if source_choice == "2":
+                try:
+                    client_id, client_secret = get_spotify_credentials()
+                except click.ClickException as e:
+                    console.print(
+                        Panel(f"[red]✗[/red] {e.message}", title="Error", border_style="red")
+                    )
+                    sys.exit(1)
+                auth_preview = SpotifyAuthenticator(
+                    client_id=client_id, client_secret=client_secret
+                )
+                sp_preview = auth_preview.get_client()
+                chosen = _choose_playlists(SpotifyClient(sp_preview))
+                if not chosen:
+                    console.print("[yellow]No playlists selected. Exiting.[/yellow]")
+                    return
+                playlist_ids = tuple(pl.id for pl in chosen)
+                console.print()
+
             # Question: How many songs
             console.print("[bold]🎵 How many songs to download?[/bold]")
             console.print("[dim]  Suggestions: 10 (quick), 25, 50, 100[/dim]")
@@ -513,10 +635,13 @@ def download(
         youtube_searcher = YouTubeSearcher(quiet=True)
         matcher = TrackMatcher(youtube_searcher, cache=cache, skip_detailed_info=True)
 
-        tracks: list[Track] = []
-        with console.status("[bold green]🎵 Loading liked songs...[/bold green]", spinner="dots"):
-            for track in spotify_client.get_liked_songs(max_tracks=limit):
-                tracks.append(track)
+        source_label = (
+            f"{len(playlist_ids)} playlist(s)" if playlist_ids else "liked songs"
+        )
+        with console.status(
+            f"[bold green]🎵 Loading {source_label}...[/bold green]", spinner="dots"
+        ):
+            tracks = _load_tracks(spotify_client, limit=limit, playlist_ids=playlist_ids)
 
         console.print(f"[green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks")
 
@@ -717,8 +842,12 @@ def download(
 @main.command()
 @click.option("--limit", "-l", default=50, help="Maximum number of tracks to fetch")
 @click.option("--output", "-o", type=click.Path(), help="Output file path (default: stdout)")
-def fetch(limit: int, output: str | None) -> None:
-    """Fetch liked songs from Spotify."""
+@click.option(
+    "--playlist", "-p", "playlist_ids", multiple=True,
+    help="Fetch from a playlist ID instead of liked songs (repeatable)",
+)
+def fetch(limit: int, output: str | None, playlist_ids: tuple[str, ...]) -> None:
+    """Fetch liked songs or playlist tracks from Spotify."""
     show_banner(mini=True)
     console.print()
 
@@ -732,7 +861,9 @@ def fetch(limit: int, output: str | None) -> None:
     sp = authenticator.get_client()
     client = SpotifyClient(sp)
 
-    tracks: list[Track] = []
+    source_label = (
+        f"{len(playlist_ids)} playlist(s)" if playlist_ids else "liked songs"
+    )
 
     with Progress(
         SpinnerColumn(style="green"),
@@ -742,14 +873,9 @@ def fetch(limit: int, output: str | None) -> None:
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("🎵 Fetching liked songs...", total=limit)
-
-        for track in client.get_liked_songs(max_tracks=limit):
-            tracks.append(track)
-            progress.update(task, completed=len(tracks))
-            progress.update(
-                task, description=f"🎵 Found: [cyan]{track.artist}[/cyan] - {track.name}"
-            )
+        task = progress.add_task(f"🎵 Fetching {source_label}...", total=limit)
+        tracks = _load_tracks(client, limit=limit, playlist_ids=playlist_ids)
+        progress.update(task, completed=len(tracks))
 
     console.print()
 
@@ -790,8 +916,9 @@ def run_match(
     workers: int,
     no_cache: bool,
     show_banner_: bool = True,
+    playlist_ids: tuple[str, ...] | list[str] = (),
 ) -> None:
-    """Core match logic - find YouTube matches for liked songs."""
+    """Core match logic - find YouTube matches for liked songs or playlists."""
     if show_banner_:
         show_banner()
 
@@ -827,9 +954,13 @@ def run_match(
         )
     )
 
-    with console.status("[bold green]🎵 Loading your liked songs...[/bold green]", spinner="dots"):
-        for track in spotify_client.get_liked_songs(max_tracks=limit):
-            tracks.append(track)
+    source_label = (
+        f"{len(playlist_ids)} playlist(s)" if playlist_ids else "your liked songs"
+    )
+    with console.status(
+        f"[bold green]🎵 Loading {source_label}...[/bold green]", spinner="dots"
+    ):
+        tracks = _load_tracks(spotify_client, limit=limit, playlist_ids=playlist_ids)
 
     console.print(f"    [green]✓[/green] Loaded [bold]{len(tracks)}[/bold] tracks from Spotify")
 
@@ -1073,6 +1204,10 @@ def run_match(
 @click.option("--fast", "-f", is_flag=True, help="Fast mode: parallel searches, skip detailed info")
 @click.option("--workers", "-w", default=8, help="Number of parallel workers (with --fast)")
 @click.option("--no-cache", is_flag=True, help="Disable result caching")
+@click.option(
+    "--playlist", "-p", "playlist_ids", multiple=True,
+    help="Match tracks from a playlist ID instead of liked songs (repeatable)",
+)
 def match(
     limit: int,
     output: str | None,
@@ -1081,8 +1216,9 @@ def match(
     fast: bool,
     workers: int,
     no_cache: bool,
+    playlist_ids: tuple[str, ...],
 ) -> None:
-    """Find YouTube matches for liked songs."""
+    """Find YouTube matches for liked songs or playlist tracks."""
     run_match(
         limit=limit,
         output=output,
@@ -1091,6 +1227,7 @@ def match(
         fast=fast,
         workers=workers,
         no_cache=no_cache,
+        playlist_ids=playlist_ids,
     )
 
 

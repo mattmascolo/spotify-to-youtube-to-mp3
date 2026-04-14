@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 spotifytoyoutube = "spotifytoyoutube.cli:main"
+spotdownload = "spotifytoyoutube.cli:main"
 
 [tool.ruff]
 line-length = 100

@@ -22,6 +22,7 @@ class SpotifyAuthenticator:
         client_secret: str,
         cache_path: Path | None = None,
         redirect_uri: str | None = None,
+        open_browser: bool = False,
     ) -> None:
         """
         Initialize Spotify authenticator.
@@ -31,6 +32,12 @@ class SpotifyAuthenticator:
             client_secret: Spotify application client secret
             cache_path: Path to store OAuth token cache
             redirect_uri: OAuth redirect URI
+            open_browser: When True, spotipy opens a browser tab and catches
+                the redirect via a local HTTP server on the redirect_uri port.
+                When False (default), spotipy prints a URL for the user to
+                open manually and reads the redirected URL back from stdin.
+                Manual mode is the safer default since it doesn't require a
+                free local port.
 
         Raises:
             ValueError: If client_id or client_secret is empty
@@ -44,6 +51,7 @@ class SpotifyAuthenticator:
         self.client_secret = client_secret
         self.cache_path = cache_path or Path.home() / ".spotifytoyoutube_cache" / ".spotify_token"
         self.redirect_uri = redirect_uri or self.DEFAULT_REDIRECT_URI
+        self.open_browser = open_browser
         self._client: spotipy.Spotify | None = None
 
     @property
@@ -61,7 +69,6 @@ class SpotifyAuthenticator:
         if self._client is not None:
             return self._client
 
-        # Ensure cache directory exists
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         auth_manager = SpotifyOAuth(
@@ -70,6 +77,7 @@ class SpotifyAuthenticator:
             redirect_uri=self.redirect_uri,
             scope=" ".join(self.scopes),
             cache_path=str(self.cache_path),
+            open_browser=self.open_browser,
         )
 
         self._client = spotipy.Spotify(auth_manager=auth_manager)

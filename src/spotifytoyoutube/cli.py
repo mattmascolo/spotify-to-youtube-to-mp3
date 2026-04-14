@@ -75,15 +75,50 @@ BANNER = r"""
 MINI_BANNER = """[bold green]♫[/bold green] [bold white]Spotify[/bold white][bold red]→[/bold red][bold yellow]YouTube[/bold yellow] [bold green]♫[/bold green]"""
 
 
+def _load_dotenv_file() -> None:
+    """
+    Populate os.environ from a .env file if one exists.
+
+    Looks in (1) the current working directory and (2) the repo root
+    relative to this file. Existing environment variables always win,
+    so an explicit export overrides the file. Malformed lines are
+    silently skipped — this is a convenience, not a strict loader.
+    """
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[2] / ".env",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        except OSError:
+            continue
+        return  # First file wins.
+
+
 def get_spotify_credentials() -> tuple[str, str]:
-    """Get Spotify credentials from environment."""
+    """Get Spotify credentials from environment or a .env file."""
+    _load_dotenv_file()
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
     if not client_id or not client_secret:
         raise click.ClickException(
             "Missing Spotify credentials. Set SPOTIFY_CLIENT_ID and "
-            "SPOTIFY_CLIENT_SECRET environment variables."
+            "SPOTIFY_CLIENT_SECRET environment variables, or create a "
+            ".env file with those keys in the project root."
         )
 
     return client_id, client_secret

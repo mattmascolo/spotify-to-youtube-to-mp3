@@ -30,8 +30,9 @@ class TestAuthCommand:
         assert "Test User" in result.output
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_auth_without_credentials_fails(self) -> None:
-        """auth command fails without credentials."""
+    @patch("spotifytoyoutube.cli._load_dotenv_file")
+    def test_auth_without_credentials_fails(self, mock_loader: Mock) -> None:
+        """auth command fails when neither env vars nor a .env file supply credentials."""
         runner = CliRunner()
         result = runner.invoke(auth)
 
